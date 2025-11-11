@@ -1,0 +1,6 @@
+llava15_7b:
+  repo_id: llava-hf/llava-1.5-7b-hf
+  revision: main
+idefics2_8b:
+  repo_id: HuggingFaceM4/idefics2-8b
+  revision: main
