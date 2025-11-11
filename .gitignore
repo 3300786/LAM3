@@ -205,3 +205,97 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.so
+*.pyo
+*.pyd
+*.log
+*.sqlite3
+.env
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ---- IDE ----
+.idea/
+.vscode/
+*.iml
+
+# ---- Jupyter / Notebooks ----
+.ipynb_checkpoints/
+*.ipynb_convert/
+*.ipynb_out/
+
+# ---- OS files ----
+.DS_Store
+Thumbs.db
+
+# ---- Model / Data ----
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.onnx
+*.safetensors
+*.npz
+*.npy
+*.h5
+*.pkl
+*.tar
+*.gz
+*.zip
+*.7z
+
+# ---- Cache / temp ----
+logs/
+wandb/
+outputs/
+runs/
+checkpoints/
+cache/
+tmp/
+temp/
+__results__/
+*.tmp
+
+# ---- Dataset ----
+data/
+datasets/
+images/
+results/
+samples/
+*.csv
+*.jsonl
+*.tsv
+
+# ---- Environment / Config ----
+*.yaml
+*.yml
+*.toml
+*.ini
+
+# ---- Backup / Misc ----
+*.bak
+*.swp
+*.orig
+*.rej
+
+# ---- Token / Secret ----
+token.txt
+api_keys.json
+credentials.json
+*.pem
+*.crt
+*.key
+
+experiments/
+attribution_maps/
+
+
