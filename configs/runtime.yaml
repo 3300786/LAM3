@@ -1,0 +1,15 @@
+precision: bf16           # 仅非量化时生效
+device_map: auto        # 二选一：给 device 或给 device_map
+
+max_new_tokens: 256
+min_new_tokens: 64
+temperature: 0.2
+top_p: 0.95
+seed: 42
+do_sample: true
+
+quantization:
+  enabled: true           # 统一开关；替代旧的 load_in_4bit
+  compute_dtype: bf16     # bfloat16 / float16
+  quant_type: nf4         # nf4 / fp4
+  use_double_quant: true
