@@ -1,0 +1,17 @@
+provider: detoxify            # perspective | openai | detoxify | hf
+threshold: 50               # 0-100，>= 阈值视为 toxic
+batch_size: 16
+max_retries: 5
+timeout_s: 30
+rate_limit:
+  perspective_qps: 1
+  openai_rps: 10
+hf:
+  model_name: "unitary/toxic-bert"
+detoxify:
+  variant: "original"       # original / unbiased / multilingual
+  checkpoint: "/data2/wangjingsong/.cache/torch/hub/checkpoints/toxic_original-c1212f89.ckpt"
+openai:
+  categories: ["hate","harassment","self-harm","violence","sexual","illicit"]
+perspective:
+  attributes: ["TOXICITY","SEVERE_TOXICITY","INSULT","PROFANITY","THREAT"]
