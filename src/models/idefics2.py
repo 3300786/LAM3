@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from contextlib import suppress
 from PIL import Image
 import torch
+from src.models.base import MLLM
 
 from transformers import (
     Idefics2Processor,
@@ -46,7 +47,7 @@ def _move_to_device(obj: Any, device: str):
     return obj
 
 
-class Idefics2Wrapper:
+class Idefics2Wrapper(MLLM):
     def __init__(self, repo_id: str, runtime_cfg: dict):
         self._device = str(runtime_cfg.get("device", "cuda:0"))
         img_short = int(runtime_cfg.get("image_short_edge", 336))
@@ -75,7 +76,7 @@ class Idefics2Wrapper:
             self.model = Idefics2ForConditionalGeneration.from_pretrained(
                 repo_id,
                 low_cpu_mem_usage=True,
-                torch_dtype=_parse_dtype(runtime_cfg.get("precision", "bf16")),
+                dtype=_parse_dtype(runtime_cfg.get("precision", "bf16")),
             )
             if torch.cuda.is_available():
                 self.model = self.model.to(self._device)

@@ -207,8 +207,3 @@ marimo/_lsp/
 __marimo__/
 
 .idea".idea/" 
-
-# secrets
-.env
-*.env
-src/utils/test.py
