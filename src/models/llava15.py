@@ -75,9 +75,9 @@ class Llava15Wrapper(MLLM):
         # 生成配置：评测期用确定性解码
         gen_kwargs: dict[str, Any] = dict(
             max_new_tokens=int(gen.max_new_tokens),
-            do_sample=False,
+            do_sample=True,
             temperature=1.0,
-            top_p=1.0,
+            top_p=0.9,
             repetition_penalty=1.0,
         )
 

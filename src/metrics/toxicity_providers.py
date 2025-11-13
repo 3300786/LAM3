@@ -40,7 +40,9 @@ class PerspectiveClient:
                 "requestedAttributes": {attr: {} for attr in self.attrs},
                 "doNotStore": True
             }
+            print("[perspective] sending request...", flush=True)
             r = requests.post(f"{url}?key={self.key}", json=body, timeout=self.timeout)
+            print("[perspective] got response", flush=True)
             r.raise_for_status()
             data = r.json()
             labels = {}

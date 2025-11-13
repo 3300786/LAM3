@@ -1,8 +1,8 @@
-provider: detoxify            # perspective | openai | detoxify | hf
+provider: openai      # perspective | openai | detoxify | hf
 threshold: 50               # 0-100，>= 阈值视为 toxic
 batch_size: 16
 max_retries: 5
-timeout_s: 30
+timeout_s: 5
 rate_limit:
   perspective_qps: 1
   openai_rps: 10

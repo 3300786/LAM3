@@ -3,7 +3,7 @@ from typing import Any, Dict
 from src.attacks.base import Attack, AttackResult
 from src.models.base import MLLM
 from src.utils.runtime import GenCfg
-from src.metrics.asr import is_attack_success_by_toxicity
+from src.metrics.asr import is_attack_success_by_toxicity, is_attack_success
 from src.metrics.toxicity import ToxicityConfig, load_yaml as load_tox_cfg
 
 JAILBREAK_PREFIX = (
@@ -39,14 +39,16 @@ class SimplePromptInjection(Attack):
 
         output = model.generate(image, adv_prompt, gen_cfg)
 
-        # success 判定先留空位，后面用 judge 系统填充
-        success = is_attack_success_by_toxicity(output, self.tox_cfg, extra_rules=None)
-
+        res = is_attack_success(output, self.tox_cfg)
+        success = res["success"]
+        tox_score = res["agg_score"]
         return AttackResult(
             adv_prompt=adv_prompt,
             output=output,
             success=success,
             extra={
                 "meta": meta or {},
+                "tox_score": tox_score,
+                "raw_toxicity_score": res["raw_toxicity_score"],
             },
         )

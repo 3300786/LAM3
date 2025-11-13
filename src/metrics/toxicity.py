@@ -66,7 +66,7 @@ if __name__ == "__main__":
     args = ap.parse_args()
 
     cfg = load_yaml(args.cfg)
-
+    print("[tox] loaded provider =", cfg.provider, file=sys.stderr)
     # 优先使用 --key；否则自动探测常见字段
     candidates = [args.key] if args.key else [
         "text", "output", "response", "answer",

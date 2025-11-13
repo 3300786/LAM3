@@ -3,7 +3,7 @@ device_map: auto        # 二选一：给 device 或给 device_map
 
 max_new_tokens: 256
 min_new_tokens: 64
-temperature: 0.2
+temperature: 1.0
 top_p: 0.95
 seed: 42
 do_sample: true
