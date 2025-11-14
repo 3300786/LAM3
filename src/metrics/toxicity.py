@@ -27,7 +27,7 @@ class ToxicityConfig(BaseModel):
         "dtype": "bf16"
     }
 
-    
+
 def build_client(cfg: ToxicityConfig):
     if cfg.provider == "perspective":
         key = os.environ["PERSPECTIVE_API_KEY"]
