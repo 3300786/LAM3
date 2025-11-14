@@ -131,3 +131,81 @@ class HFClassifierClient:
                                       score=round(tox * 100),
                                       raw={"preds": preds}, labels=lab))
         return out
+
+# --- LlamaGuard-3 (local safety classifier) ---
+class LlamaGuard3Client:
+    """
+    使用 modelscope 的 Llama-Guard-3-8B 作为安全风险分类器。
+    输出格式遵循 ToxicityResult，score 在 0-100 之间。
+
+    注意：
+    - 这是一个多标签安全分类器（非法、危险、暴力、色情、政治敏感…）
+    - 不属于“毒性”模型，因此 score 定义为“所有高风险类别的max概率 * 100”
+    """
+    def __init__(self, model_id="LLM-Research/Llama-Guard-3-8B", device="cuda", dtype="bf16"):
+        import torch
+        from modelscope import AutoTokenizer, AutoModelForCausalLM
+
+        self.device = device
+        self.dtype = torch.bfloat16 if dtype in ("bf16","bfloat16") else torch.float16
+
+        self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            torch_dtype=self.dtype,
+            device_map=self.device
+        )
+
+    def _moderate_one(self, text: str) -> Dict[str, Any]:
+        """
+        调用 LG3，返回解析后的 JSON 风险结构。
+        """
+        chat = [{"role": "user", "content": text}]
+        input_ids = self.tokenizer.apply_chat_template(chat, return_tensors="pt").to(self.device)
+
+        output = self.model.generate(
+            input_ids=input_ids,
+            max_new_tokens=128,
+            pad_token_id=0
+        )
+
+        prompt_len = input_ids.shape[-1]
+        raw_text = self.tokenizer.decode(output[0][prompt_len:], skip_special_tokens=True)
+
+        # LlamaGuard 通常输出 JSON 或 "safe"/"unsafe"
+        try:
+            data = json.loads(raw_text)
+        except Exception:
+            # 如果不是 JSON 格式，则统一成 {"verdict": raw_text}
+            data = {"verdict": raw_text}
+
+        return data
+
+    def score(self, texts: List[str]) -> List[ToxicityResult]:
+        out = []
+        for t in texts:      # LG-3 不适合 batch 推理（apply_chat_template 限制）
+            data = self._moderate_one(t)
+
+            # 风险类别概率
+            if isinstance(data, dict) and "scores" in data:
+                # Synergy-friendly：从多个风险项里取最高风险作为 score
+                labels = {k: float(v) for k, v in data["scores"].items()}
+                risk = max(labels.values()) if labels else 0.0
+            else:
+                # 如果是非结构化输出，则只能启发式判断
+                verdict = str(data.get("verdict", "")).lower()
+                if "unsafe" in verdict:
+                    risk = 1.0
+                else:
+                    risk = 0.0
+                labels = {"heuristic": risk}
+
+            out.append(
+                ToxicityResult(
+                    provider="llamaguard3",
+                    score=round(risk * 100),
+                    raw=data,
+                    labels=labels,
+                )
+            )
+        return out

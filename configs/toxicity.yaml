@@ -1,4 +1,4 @@
-provider: openai      # perspective | openai | detoxify | hf
+provider: llamaguard3          # perspective | openai | detoxify | hf | llamaguard3
 threshold: 50               # 0-100，>= 阈值视为 toxic
 batch_size: 16
 max_retries: 5
@@ -15,3 +15,7 @@ openai:
   categories: ["hate","harassment","self-harm","violence","sexual","illicit"]
 perspective:
   attributes: ["TOXICITY","SEVERE_TOXICITY","INSULT","PROFANITY","THREAT"]
+llamaguard3:
+  model_id: "LLM-Research/Llama-Guard-3-8B"
+  device: "cuda"
+  dtype: "bf16"

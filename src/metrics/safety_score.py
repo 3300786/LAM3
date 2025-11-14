@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import List, Dict, Any
 import math
 
-from .toxicity import ToxicityConfig, eval_toxicity
+from src.metrics.toxicity import ToxicityConfig, eval_toxicity
 
 def compute_safety_score(
     texts: List[str],

@@ -6,8 +6,8 @@ from pydantic import BaseModel
 from tqdm import tqdm
 import yaml
 
-from .toxicity_providers import (
-    PerspectiveClient, OpenAIModerationClient, DetoxifyClient, HFClassifierClient, ToxicityResult
+from src.metrics.toxicity_providers import (
+    PerspectiveClient, OpenAIModerationClient, DetoxifyClient, HFClassifierClient, ToxicityResult, LlamaGuard3Client
 )
 
 class ToxicityConfig(BaseModel):
@@ -21,7 +21,13 @@ class ToxicityConfig(BaseModel):
     detoxify: Dict[str, Any] = {"variant": "original"}
     openai: Dict[str, Any] = {}
     perspective: Dict[str, Any] = {"attributes": ["TOXICITY","SEVERE_TOXICITY","INSULT","PROFANITY","THREAT"]}
+    llamaguard3: Dict[str, Any] = {
+        "model_id": "LLM-Research/Llama-Guard-3-8B",
+        "device": "cuda",
+        "dtype": "bf16"
+    }
 
+    
 def build_client(cfg: ToxicityConfig):
     if cfg.provider == "perspective":
         key = os.environ["PERSPECTIVE_API_KEY"]
@@ -33,6 +39,10 @@ def build_client(cfg: ToxicityConfig):
         return DetoxifyClient(**cfg.detoxify)
     if cfg.provider == "hf":
         return HFClassifierClient(**cfg.hf)
+    if cfg.provider == "llamaguard3":
+        return LlamaGuard3Client(
+            **cfg.llamaguard3
+        )
     raise ValueError(f"unknown provider: {cfg.provider}")
 
 def eval_toxicity(texts: List[str], cfg: ToxicityConfig) -> List[Dict[str, Any]]:
