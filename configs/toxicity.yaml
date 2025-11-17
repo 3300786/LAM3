@@ -4,7 +4,7 @@ batch_size: 16
 max_retries: 5
 timeout_s: 5
 rate_limit:
-  perspective_qps: 0.4
+  perspective_qps: 0.5
   openai_rps: 10
 hf:
   model_name: "unitary/toxic-bert"

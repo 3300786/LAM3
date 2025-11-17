@@ -118,6 +118,7 @@ def build_model_and_gen(m_cfg: Dict):
     set_seed(runtime.get("seed", 42))
 
     model_name = m_cfg["name"]
+    print("[run] model name:", model_name)
     model = build_model(model_name, models, runtime)
 
     gen = GenCfg(

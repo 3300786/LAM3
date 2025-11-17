@@ -123,8 +123,9 @@ def main():
             R0_v = Rm["img_only"]
             R0_0 = Rm["none"]
 
-            phi = Rt_v - Rt_0 - R0_v + R0_0
-
+            # phi = Rt_v - Rt_0 - R0_v + R0_0
+            phi = Rt_v / ((1 - Rt_0) * (1 - R0_v) + 0.0001)
+            print(phi)
             out = {
                 "id": cid,
                 "R": {

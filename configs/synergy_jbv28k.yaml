@@ -15,7 +15,7 @@ eval:
   modes: ["txt_img", "txt_only", "img_only", "none"]
 
 model:
-  name: "llava15_7b"        # 或 "idefics2_8b"，按你的 registry 替换
+  name: "idefics2_8b"        # 或 "idefics2_8b"，按你的 registry 替换
   device: "cuda:0"
   # 以下视你的 registry 而定，这里只占位
   models_cfg_path: "configs/models.yaml"
