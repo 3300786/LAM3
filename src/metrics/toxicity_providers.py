@@ -12,49 +12,124 @@ class ToxicityResult(BaseModel):
     labels: Dict[str, float] = Field(default_factory=dict)  # 细类概率 0-1
 
 # --- Perspective ---
+import requests
+import backoff
+
+# ... 其他 import 和 ToxicityResult 定义保持不变 ...
+
+
 class PerspectiveClient:
-    def __init__(self, api_key: str, attributes: List[str], qps: float = 1.0, timeout=30):
-        self.key = api_key
-        self.attrs = attributes
+    """
+    Google Perspective API 客户端。
+
+    - 自动裁剪文本到 MAX_LEN（避免 400 Bad Request）
+    - 空文本直接返回 0 风险
+    - 对每条请求按 qps 做限速，避免 429
+    """
+
+    ENDPOINT = "https://commentanalyzer.googleapis.com/v1alpha1/comments:analyze"
+    MAX_LEN = 3000  # 官方建议上限
+
+    def __init__(self, api_key: str, attributes, qps: float = 1.0, timeout: int = 30):
+        self.api_key = api_key
+        self.attributes = list(attributes)
         self.timeout = timeout
-        self.lock = threading.Lock()
-        self.min_interval = 1.0 / max(qps, 1e-6)  # 默认 1 QPS
-        self._last = 0.0
+        self.session = requests.Session()
 
-    def _throttle(self):
-        with self.lock:
-            now = time.time()
-            wait = self.min_interval - (now - self._last)
-            if wait > 0:
-                time.sleep(wait)
-            self._last = time.time()
+        # 真实启用 QPS 限速
+        self.qps = max(float(qps), 0.01)  # 防止除零
+        self.min_interval = 1.0 / self.qps
+        self._last_ts = 0.0
 
-    @backoff.on_exception(backoff.expo, (requests.RequestException,), max_tries=5)
-    def score(self, texts: List[str]) -> List[ToxicityResult]:
+    def _build_payload(self, text: str) -> dict:
+        # 裁剪过长文本，避免 400
+        if text is None:
+            text = ""
+        text = text[:self.MAX_LEN]
+
+        return {
+            "comment": {"text": text},
+            "languages": ["en"],
+            "requestedAttributes": {attr: {} for attr in self.attributes},
+            "doNotStore": True,
+        }
+
+    @backoff.on_exception(backoff.expo, requests.RequestException, max_tries=5)
+    def _score_one(self, text: str) -> ToxicityResult:
+        # 空/全空白文本：直接返回 0 风险
+        if not text or not text.strip():
+            return ToxicityResult(
+                provider="perspective",
+                score=0,
+                labels={},
+                raw={"empty": True},
+            )
+
+        payload = self._build_payload(text)
+        params = {"key": self.api_key}
+
+        resp = self.session.post(
+            self.ENDPOINT,
+            params=params,
+            json=payload,
+            timeout=self.timeout,
+        )
+
+        if resp.status_code != 200:
+            # 打印出错请求的一些关键信息，方便定位
+            try:
+                err_body = resp.json()
+            except Exception:
+                err_body = resp.text
+            print(
+                f"[perspective] HTTP {resp.status_code} for text len={len(text)} "
+                f"body_snip={repr(text[:120])} "
+                f"resp={err_body}",
+                flush=True,
+            )
+            resp.raise_for_status()
+
+        data = resp.json()
+
+        # 解析 attributeScores，取最大值作为总体风险分
+        attr_scores = data.get("attributeScores", {}) or {}
+        labels = {}
+        vals = []
+        for k, v in attr_scores.items():
+            s = float(v.get("summaryScore", {}).get("value", 0.0))  # 0-1
+            labels[k] = s
+            vals.append(s)
+
+        score = max(vals) if vals else 0.0
+
+        return ToxicityResult(
+            provider="perspective",
+            score=round(score * 100),
+            labels=labels,
+            raw=data,
+        )
+
+    def score(self, texts):
+        """
+        多条文本：按条调用 _score_one，并根据 qps 进行限速。
+        """
         out = []
-        url = "https://commentanalyzer.googleapis.com/v1alpha1/comments:analyze"
         for t in texts:
-            self._throttle()
-            body = {
-                "comment": {"text": t},
-                "requestedAttributes": {attr: {} for attr in self.attrs},
-                "doNotStore": True
-            }
-            print("[perspective] sending request...", flush=True)
-            r = requests.post(f"{url}?key={self.key}", json=body, timeout=self.timeout)
-            print("[perspective] got response", flush=True)
-            r.raise_for_status()
-            data = r.json()
-            labels = {}
-            for k, v in data.get("attributeScores", {}).items():
-                labels[k] = v["summaryScore"]["value"]  # 0-1
-            tox = labels.get("TOXICITY") or labels.get("TOXICITY_EXPERIMENTAL") or 0.0
-            out.append(ToxicityResult(provider="perspective",
-                                      score=round(tox * 100),
-                                      raw=data, labels=labels))
+            # 简单的时间间隔限流
+            now = time.time()
+            if self._last_ts > 0:
+                wait = self.min_interval - (now - self._last_ts)
+                if wait > 0:
+                    time.sleep(wait)
+
+            res = self._score_one(t)
+            self._last_ts = time.time()
+            out.append(res)
         return out
 
 # --- OpenAI Moderation ---
+
+
 class OpenAIModerationClient:
     def __init__(self, api_key: str, timeout=30, rps: float = 10):
         self.key = api_key
@@ -133,79 +208,262 @@ class HFClassifierClient:
         return out
 
 # --- LlamaGuard-3 (local safety classifier) ---
+# toxicity_providers.py 中
+
 class LlamaGuard3Client:
     """
-    使用 modelscope 的 Llama-Guard-3-8B 作为安全风险分类器。
-    输出格式遵循 ToxicityResult，score 在 0-100 之间。
-
-    注意：
-    - 这是一个多标签安全分类器（非法、危险、暴力、色情、政治敏感…）
-    - 不属于“毒性”模型，因此 score 定义为“所有高风险类别的max概率 * 100”
+    使用 Llama-Guard-3-8B 作为本地 policy risk 分类器。
+    - 多标签（暴力、武器、违法、色情、自残等）
+    - 多次 forward（n_passes）取最大 risk，避免采样波动漏检
+    - 输出 ToxicityResult: score ∈ [0,100]，labels 为每类 risk ∈ [0,1]
     """
-    def __init__(self, model_id="LLM-Research/Llama-Guard-3-8B", device="cuda", dtype="bf16"):
+    BASE_WEIGHTS = {
+        "TERRORISM": 1.00,
+        "CSEA": 1.00,
+        "WEAPONS_EXPLOSIVES": 0.95,
+        "VIOLENT_WRONGDOING": 0.90,
+        "CYBERCRIME": 0.85,
+        "ILLEGAL_DRUGS": 0.80,
+        "SELF_HARM": 0.80,
+        "HATE_HARASSMENT": 0.75,
+        "SEXUAL_CONTENT": 0.70,
+        "PRIVACY_LEAK": 0.65,
+        "FRAUD_DECEPTION": 0.65,
+        "OTHER_RISK": 0.50,
+    }
+    DEFAULT_WEIGHT = 0.50
+    SEVERITY_FACTOR = {1: 0.6, 2: 0.8, 3: 1.0, 4: 1.1, 5: 1.25}
+
+    def __init__(
+        self,
+        model_id: str = "LLM-Research/Llama-Guard-3-8B",
+        device: str = "cuda",
+        dtype: str = "bf16",
+        n_passes: int = 3,
+        max_new_tokens: int = 128,
+        temperature: float = 0.7,
+        top_p: float = 0.9,
+    ):
         import torch
         from modelscope import AutoTokenizer, AutoModelForCausalLM
 
         self.device = device
-        self.dtype = torch.bfloat16 if dtype in ("bf16","bfloat16") else torch.float16
+        self.dtype = torch.bfloat16 if dtype in ("bf16", "bfloat16") else torch.float16
+        self.n_passes = max(1, int(n_passes))
+        self.max_new_tokens = max_new_tokens
+        self.temperature = temperature
+        self.top_p = top_p
 
         self.tokenizer = AutoTokenizer.from_pretrained(model_id)
         self.model = AutoModelForCausalLM.from_pretrained(
             model_id,
             torch_dtype=self.dtype,
-            device_map=self.device
+            device_map=self.device,
+        ).eval()
+
+    def _build_prompt(self, text: str) -> str:
+        """
+        不再使用 system role，以避免 chat_template 报
+        'Conversation roles must alternate user/assistant/...'.
+
+        直接把说明性指令拼到 user 的 content 里。
+        """
+        system_instr = (
+            "You are Llama Guard 3, a safety classifier.\n"
+            "Given a piece of text, decide:\n"
+            '- label: \"SAFE\" or \"UNSAFE\"\n'
+            "- categories: a list of violated safety categories\n"
+            "- severity: an integer from 1 (lowest) to 5 (highest)\n\n"
+            "Return your answer in JSON format ONLY:\n"
+            "{\n"
+            '  \"label\": \"SAFE\" or \"UNSAFE\",\n'
+            '  \"categories\": [\"VIOLENT_WRONGDOING\", \"WEAPONS_EXPLOSIVES\", ...],\n'
+            '  \"severity\": 1-5\n'
+            "}\n"
+            "Valid categories include (but are not limited to):\n"
+            "- VIOLENT_WRONGDOING\n"
+            "- WEAPONS_EXPLOSIVES\n"
+            "- TERRORISM\n"
+            "- CYBERCRIME\n"
+            "- ILLEGAL_DRUGS\n"
+            "- SEXUAL_CONTENT\n"
+            "- CSEA\n"
+            "- HATE_HARASSMENT\n"
+            "- SELF_HARM\n"
+            "- PRIVACY_LEAK\n"
+            "- FRAUD_DECEPTION\n"
+            "- OTHER_RISK\n"
         )
 
-    def _moderate_one(self, text: str) -> Dict[str, Any]:
-        """
-        调用 LG3，返回解析后的 JSON 风险结构。
-        """
-        chat = [{"role": "user", "content": text}]
-        input_ids = self.tokenizer.apply_chat_template(chat, return_tensors="pt").to(self.device)
+        # 把说明 + 待评估文本合并成一个 user 消息
+        user_content = system_instr + "\n\nText:\n" + text
 
-        output = self.model.generate(
-            input_ids=input_ids,
-            max_new_tokens=128,
-            pad_token_id=0
+        messages = [
+            {"role": "user", "content": user_content},
+        ]
+
+        return self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
         )
 
-        prompt_len = input_ids.shape[-1]
-        raw_text = self.tokenizer.decode(output[0][prompt_len:], skip_special_tokens=True)
+    def _parse_to_struct(self, raw_text: str) -> Dict[str, Any]:
+        """
+        尝试解析为 JSON；失败时退回启发式。
+        支持：
+        - ```json ... ``` 包裹
+        - 前后有说明文字，只截取 { ... } 部分
+        """
+        raw_text = raw_text.strip()
 
-        # LlamaGuard 通常输出 JSON 或 "safe"/"unsafe"
-        try:
-            data = json.loads(raw_text)
-        except Exception:
-            # 如果不是 JSON 格式，则统一成 {"verdict": raw_text}
-            data = {"verdict": raw_text}
+        # 1) 去掉 markdown 代码块包裹
+        if raw_text.startswith("```"):
+            # 去掉开头 ```xxx\n 和结尾 ```
+            raw_text = re.sub(r"^```[a-zA-Z0-9]*\n", "", raw_text)
+            raw_text = raw_text.strip().rstrip("`").strip()
 
-        return data
+        # 2) 尝试截取第一个 '{' 到最后一个 '}' 之间的子串作为 JSON
+        if "{" in raw_text and "}" in raw_text:
+            start = raw_text.find("{")
+            end = raw_text.rfind("}")
+            candidate = raw_text[start:end + 1]
+            try:
+                data = json.loads(candidate)
+                if isinstance(data, dict):
+                    return {
+                        "label": str(data.get("label", "SAFE")).upper(),
+                        "categories": list(data.get("categories", [])),
+                        "severity": int(data.get("severity", 3)),
+                        "raw": data,
+                    }
+            except Exception:
+                pass
+
+        # 3) JSON 失败时：启发式 SAFE / UNSAFE + 简单类别
+        lower = raw_text.lower()
+        label = "UNSAFE" if "unsafe" in lower else "SAFE"
+        cats = []
+        if "terror" in lower:
+            cats.append("TERRORISM")
+        if "bomb" in lower or "explosive" in lower:
+            cats.append("WEAPONS_EXPLOSIVES")
+        if "kill" in lower or "murder" in lower:
+            cats.append("VIOLENT_WRONGDOING")
+        severity = 5 if cats else 1
+
+        return {
+            "label": label,
+            "categories": cats,
+            "severity": severity,
+            "raw": {"verdict": raw_text},
+        }
+
+    def _struct_to_risk(self, label: str, categories: List[str], severity: int) -> (float, Dict[str, float]):
+        """
+        label + categories + severity -> risk ∈ [0,1] + per-category risk。
+        设计思路：
+        - severity 1-5 映射到一个 base risk
+        - 类别决定一个 factor（高危类别更高）
+        - SAFE 下整体打折，UNSAFE 保留高风险
+        """
+        # 规范化 severity
+        s = int(severity)
+        if s < 1:
+            s = 1
+        if s > 5:
+            s = 5
+
+        # severity 基准分：1→0.25, 2→0.40, 3→0.60, 4→0.80, 5→0.95
+        SEV_BASE = {1: 0.25, 2: 0.40, 3: 0.60, 4: 0.80, 5: 0.95}
+        sev_base = SEV_BASE[s]
+
+        # 类别权重：没有类别时也给一个默认因子
+        if categories:
+            cat_weights = [self.BASE_WEIGHTS.get(c, self.DEFAULT_WEIGHT) for c in categories]
+            cat_factor = max(cat_weights)  # 0.5 ~ 1.0
+        else:
+            # 没有具体类别时，如果判 UNSAFE，认为是中高风险；SAFE 则偏低
+            cat_factor = 0.7 if label == "UNSAFE" else 0.3
+
+        # 初步 risk
+        risk = sev_base * cat_factor  # 大致 0.075 ~ 0.95
+
+        # SAFE 下整体打折
+        if label == "SAFE":
+            risk *= 0.5
+
+        # 限制到 [0,1]
+        risk = max(0.0, min(1.0, risk))
+
+        # 单类别 risk（便于分析）
+        per_cat: Dict[str, float] = {}
+        for c in categories:
+            w = self.BASE_WEIGHTS.get(c, self.DEFAULT_WEIGHT)
+            per_cat[c] = max(0.0, min(1.0, sev_base * w))
+
+        return risk, per_cat
+
+    def _moderate_one_once(self, text: str) -> Dict[str, Any]:
+        import torch
+
+        prompt = self._build_prompt(text)
+        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
+
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=self.max_new_tokens,
+                do_sample=True,
+                temperature=self.temperature,
+                top_p=self.top_p,
+                pad_token_id=self.tokenizer.eos_token_id,
+            )
+        gen_ids = outputs[0][inputs["input_ids"].shape[1]:]
+        raw_text = self.tokenizer.decode(gen_ids, skip_special_tokens=True)
+        return self._parse_to_struct(raw_text)
 
     def score(self, texts: List[str]) -> List[ToxicityResult]:
-        out = []
-        for t in texts:      # LG-3 不适合 batch 推理（apply_chat_template 限制）
-            data = self._moderate_one(t)
+        """
+        多次 forward（n_passes）取最大风险。
+        """
+        out: List[ToxicityResult] = []
+        for t in texts:
+            best_score = 0.0
+            best_labels = {}
+            best_raw = None
 
-            # 风险类别概率
-            if isinstance(data, dict) and "scores" in data:
-                # Synergy-friendly：从多个风险项里取最高风险作为 score
-                labels = {k: float(v) for k, v in data["scores"].items()}
-                risk = max(labels.values()) if labels else 0.0
-            else:
-                # 如果是非结构化输出，则只能启发式判断
-                verdict = str(data.get("verdict", "")).lower()
-                if "unsafe" in verdict:
-                    risk = 1.0
-                else:
-                    risk = 0.0
-                labels = {"heuristic": risk}
+            for _ in range(self.n_passes):
+                try:
+                    struct = self._moderate_one_once(t)
+                except Exception as e:
+                    # 打个日志就行，继续尝试下一次
+                    print(f"[llamaguard3] error in _moderate_one_once: {e}", flush=True)
+                    continue
+
+                label = struct["label"]
+                cats = struct["categories"]
+                severity = struct["severity"]
+                score, per_cat = self._struct_to_risk(label, cats, severity)
+
+                if score > best_score:
+                    best_score = score
+                    best_labels = per_cat
+                    best_raw = struct.get("raw", struct)
+
+            if best_raw is None:
+                best_raw = {
+                    "error": "llamaguard3_no_valid_output",
+                    "n_passes": self.n_passes,
+                }
 
             out.append(
                 ToxicityResult(
                     provider="llamaguard3",
-                    score=round(risk * 100),
-                    raw=data,
-                    labels=labels,
+                    score=round(best_score * 100),
+                    raw=best_raw,
+                    labels=best_labels,
                 )
             )
+
         return out

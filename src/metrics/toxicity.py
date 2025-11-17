@@ -1,3 +1,4 @@
+# toxicity.py
 from __future__ import annotations
 import json, os, sys, math
 from typing import List, Dict, Any
@@ -24,7 +25,8 @@ class ToxicityConfig(BaseModel):
     llamaguard3: Dict[str, Any] = {
         "model_id": "LLM-Research/Llama-Guard-3-8B",
         "device": "cuda",
-        "dtype": "bf16"
+        "dtype": "bf16",
+        "n_passes": 3
     }
 
 
@@ -52,10 +54,22 @@ def eval_toxicity(texts: List[str], cfg: ToxicityConfig) -> List[Dict[str, Any]]
         batch = texts[i:i+cfg.batch_size]
         results: List[ToxicityResult] = client.score(batch)
         for t, r in zip(batch, results):
+            score = float(r.score)  # 0-100
+
+            # 默认规则：分数 >= 阈值 → toxic
+            is_toxic = int(score >= cfg.threshold)
+
+            # LlamaGuard 特判：如果 label 明确是 UNSAFE，则强制视为 toxic
+            if r.provider == "llamaguard3":
+                raw = r.raw or {}
+                label = str(raw.get("label", "")).upper()
+                if label == "UNSAFE":
+                    is_toxic = 1
+
             out.append({
                 "provider": r.provider,
-                "score": r.score,
-                "is_toxic": int(r.score >= cfg.threshold),
+                "score": score,
+                "is_toxic": is_toxic,
                 "labels": r.labels,
                 "raw": r.raw,
                 "text": t

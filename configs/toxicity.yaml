@@ -1,10 +1,10 @@
-provider: llamaguard3          # perspective | openai | detoxify | hf | llamaguard3
-threshold: 50               # 0-100，>= 阈值视为 toxic
+provider: perspective          # perspective | openai | detoxify | hf | llamaguard3
+threshold: 1                   # 0-100，>= 阈值视为 toxic
 batch_size: 16
 max_retries: 5
 timeout_s: 5
 rate_limit:
-  perspective_qps: 1
+  perspective_qps: 0.4
   openai_rps: 10
 hf:
   model_name: "unitary/toxic-bert"

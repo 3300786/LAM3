@@ -20,7 +20,7 @@ model:
   # 以下视你的 registry 而定，这里只占位
   models_cfg_path: "configs/models.yaml"
   runtime_cfg_path: "configs/runtime.yaml"
-  max_new_tokens: 64
+  max_new_tokens: 256
   min_new_tokens: 1
 log:
   raw_log_path: "outputs/logs/synergy_jbv28k_mini_raw.jsonl"
