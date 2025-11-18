@@ -15,7 +15,7 @@ eval:
   modes: ["txt_img", "txt_only", "img_only", "none"]
 
 model:
-  name: "idefics2_8b"        # 或 "idefics2_8b"，按你的 registry 替换
+  name: "llava15_7b"        # 或 "idefics2_8b"，按你的 registry 替换
   device: "cuda:0"
   # 以下视你的 registry 而定，这里只占位
   models_cfg_path: "configs/models.yaml"
@@ -23,6 +23,7 @@ model:
   max_new_tokens: 256
   min_new_tokens: 1
 log:
-  raw_log_path: "outputs/logs/synergy_jbv28k_mini_raw.jsonl"
+  # raw_log_path: "outputs/logs/synergy_jbv28k_mini_raw.jsonl"
+  raw_log_path: "outputs/metrics/synergy_jbv28k_synergy_subset_qwen_judge.jsonl"
   metric_path: "outputs/metrics/synergy_jbv28k_mini_scores.jsonl"
   summary_path: "outputs/metrics/synergy_jbv28k_mini_scores.summary.json"

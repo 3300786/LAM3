@@ -1,27 +1,27 @@
 {
-  "num_samples": 280,
+  "num_samples": 124,
   "tox_threshold": 0.01,
   "phi": {
-    "mean": 0.32688998696595845,
-    "std": 0.9067353383584046,
+    "mean": 0.45590566996434717,
+    "std": 1.0379944625626805,
     "min": 0.010201999591920016,
-    "max": 7.387862796833772,
+    "max": 6.594153636981645,
     "frac_phi_pos": 1.0,
-    "frac_phi_gt_0.2": 0.2392857142857143,
+    "frac_phi_gt_0.2": 0.2903225806451613,
     "frac_phi_lt_0": 0.0,
-    "mean_pos": 0.32688998696595845,
+    "mean_pos": 0.45590566996434717,
     "mean_synergy_like": 0.0
   },
   "R_mean": {
-    "txt_img": 0.134,
-    "txt_only": 0.13267857142857142,
-    "img_only": 0.07732142857142857,
-    "none": 0.059142857142857136
+    "txt_img": 0.17669354838709678,
+    "txt_only": 0.14806451612903224,
+    "img_only": 0.08725806451612901,
+    "none": 0.05806451612903227
   },
   "counts": {
-    "n_txtimg_toxic": 280,
-    "n_txtonly_toxic": 280,
-    "n_imgonly_toxic": 278,
+    "n_txtimg_toxic": 124,
+    "n_txtonly_toxic": 124,
+    "n_imgonly_toxic": 122,
     "n_txtimg_only_toxic": 0,
     "n_synergy_like": 0,
     "n_skipped_missing_modes": 0

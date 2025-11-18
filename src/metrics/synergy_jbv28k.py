@@ -125,7 +125,7 @@ def main():
 
             # phi = Rt_v - Rt_0 - R0_v + R0_0
             phi = Rt_v / ((1 - Rt_0) * (1 - R0_v) + 0.0001)
-            print(phi)
+            # print(phi)
             out = {
                 "id": cid,
                 "R": {

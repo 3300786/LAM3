@@ -1,6 +1,6 @@
 # src/models/base.py
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Dict
 from src.utils.runtime import GenCfg
 
 
@@ -19,3 +19,18 @@ class MLLM(ABC):
         """
         output = self.generate(image, prompt, gen_cfg)
         return {"output": output}
+# ===== 新增：模态表征接口，用于 D(x) 等分析 =====
+    def encode_modalities(
+        self,
+        image: Any,
+        prompt: str,
+        gen_cfg: GenCfg | None = None,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """
+        返回一个 dict，键为模态名（例如 "text", "image"），值为对应模态的向量表征。
+        缺省实现抛错，具体模型（Idefics2 / LLaVA 等）自行重写。
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement encode_modalities()."
+        )
