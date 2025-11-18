@@ -1,4 +1,4 @@
-# LAM3: Leak Alignment in Multi-Modal Models
+# LAM3: Leaky Alignment in Multi-Modal Models
 
 **LAM3** explores the alignment vulnerability of multimodal large language models (MLLMs).  
 It proposes an adversarial attack pipeline using cross-attention gradient signals and provides a reproducible benchmark for evaluating jailbreak robustness and defense mechanisms.
