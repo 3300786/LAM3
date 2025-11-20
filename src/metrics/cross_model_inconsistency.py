@@ -442,7 +442,7 @@ def analyze_by_D_buckets(samples: List[Dict[str, Any]], out_dir: Path) -> None:
 
     print("\n[metrics] === Global stats (over all D) ===")
     print(f"  N = {len(samples)}")
-    print(f"  D_mean = {D_mean:.4f}, D_std = {D_std:.4f}")
+    print(f"  D_mean = {D_mean:.4f}, D_std = {D_std:.4f}, D_min = {min(Ds):.4f}, D_max = {max(Ds):.4f}")
     print(f"  ASR = {global_asr:.3f}, Refusal = {global_refusal:.3f}, Toxicity = {global_tox:.2f}")
 
     # ---------- D 分桶 ----------
@@ -496,7 +496,37 @@ def analyze_by_D_buckets(samples: List[Dict[str, Any]], out_dir: Path) -> None:
             f"D_mean={info['D_mean']:.4f}  ASR={info['ASR']:.3f}  "
             f"Refusal={info['Refusal']:.3f}  Tox={info['Toxicity']:.2f}"
         )
+    def _corr(xs: List[float], ys: List[float]) -> float:
 
+        if not xs or len(xs) != len(ys):
+
+            return 0.0
+
+        m_x, m_y = _mean(xs), _mean(ys)
+
+        num = sum((x - m_x) * (y - m_y) for x, y in zip(xs, ys))
+
+        den_x = math.sqrt(sum((x - m_x) ** 2 for x in xs))
+
+        den_y = math.sqrt(sum((y - m_y) ** 2 for y in ys))
+
+        if den_x == 0 or den_y == 0:
+
+            return 0.0
+
+        return num / (den_x * den_y)
+
+
+
+    corr_D_ASR = _corr(Ds, asr_list)
+
+    corr_D_Refusal = _corr(Ds, refusal_list)
+
+
+
+    print(f"  corr(D, ASR) = {corr_D_ASR:.4f}")
+
+    print(f"  corr(D, Refusal) = {corr_D_Refusal:.4f}")
     # 保存 summary JSON
     summary = {
         "global": {

@@ -1,0 +1,254 @@
+下面为你生成 **完整的当日进展报告（适合直接作为 LAM3 项目 Daily Log）**，内容围绕你今日新增的联合建模（Synergy × Inconsistency）分析、代码扩展与图表实验，采用你要求的结构格式。
+
+---
+
+# **🔥 LAM3 – Joint Synergy–Inconsistency Analysis Daily Report**
+
+**Date: 2025-11-18**
+
+---
+
+# **1. Overview**
+
+今日工作围绕 **多模态越狱行为的联合放大机制（Synergy × Inconsistency）** 展开，成功完成了以下核心进展：
+
+* **完整重构 `synergy_joint_logreg.py`**：支持 S、I、S×I 特征的构建与 Logistic 回归建模。
+* **三类标签建模**：
+  (1) ASR（越狱成功）
+  (2) Refusal（拒答）
+  (3) High-risk（毒性 ≥ 0.8）
+* **完成多类型图表绘制**：包含 8 种可解释性可视化，对研究的定性与定量结论支撑力度极强。
+* **核心结论得到实证验证**：协同增强 S 与跨模态不一致 I 存在双因子放大效应，并由 J(x) = S·(1+I) 等式良好捕获。
+
+整体来看，今天的进展将大幅强化论文的方法论与实验章节，使 LAM3 的多模态越狱解释机制具备了**可量化、可视化、可验证**的支撑逻辑。
+
+---
+
+# **2. Parameters & Settings**
+
+### **Dataset / Input Source**
+
+* 文件：`inconsistency_with_D_qwen.jsonl`（280 个有效 ID）
+* 模态：`txt_img / txt_only / img_only / none`
+* 评测指标：ASR, refusal, toxicity, cross-modal inconsistency D(x)
+
+### **Feature Construction**
+
+* 协同增强：
+  **S = max(0, R_tv - max(R_t0, R_0v))**
+* 不一致性归一化：
+  **I = normalize(D(x)) ∈ [0, 1]**
+* 交互项：
+  **SI = S × I**
+
+### **Labels**
+
+* **y_asr**：`txt_img` 是否攻击成功
+* **y_risk**：R_tv ≥ 0.8
+* **y_refusal**：`txt_img` 是否拒答
+
+### **Model**
+
+* Logistic Regression (L2, lbfgs)
+* max_iter=200
+
+### **Visualizations Generated**
+
+共 8 类图表，涉及：
+
+1. J-score 全体分布
+2. J-score 分布（ASR+ / ASR− 分层）
+3. ASR 在 (S, I) 平面的散点分布
+4. Refusal 在 (S, I) 的散点分布
+5. High-risk 在 (S, I) 的散点分布
+6. Logistic surface: ASR
+7. Logistic surface: Risk
+8. 预测曲线（固定 I，观察 S 变化对概率的影响）
+
+---
+
+# **3. Key Observations / Results**
+
+### **3.1 S 与 I 的统计特性**
+
+```
+S: min=0.000, max=1.000, mean=0.6179
+I: min=0.000, max=1.000, mean=0.4886
+ASR : pos=184, neg=96
+Risk: pos=165, neg=115
+Refusal: pos=53,  neg=227
+```
+
+---
+
+### **3.2 Logistic Regression 学到的系数**
+
+#### **ASR model**
+
+```
+intercept = -2.7592
+S      = +5.6639
+I      = -0.1528
+S * I  = +2.4174
+```
+
+📌 **解释：**
+
+* **S 是最强主效应** → 协同越强，越狱越容易
+* **I 单独影响弱** → 不一致不是主要单因子因素
+* **S×I 交互显著为正** → 不一致性会放大协同强度
+  → 简称 **双因子放大模型**（central contribution）
+
+---
+
+#### **Refusal model**
+
+```
+S      = -3.7761
+I      = +2.1529
+S * I  = -1.8430
+```
+
+📌 **解释：**
+
+* 强协同 S → 会让模型更愿意“执行”（拒绝减弱）
+* 高不一致 I → 增加拒答倾向
+* 二者呈对立关系，完全符合直觉行为
+
+---
+
+#### **High-Risk model（R_tv≥0.8）**
+
+```
+intercept = -3.5441
+S      = +5.3760
+I      = -0.4151
+S * I  = +2.0915
+```
+
+📌 **解释：**
+
+* 毒性风险与攻击成功 ASR 的建模几乎一致
+* 再次证明：**越狱成功 ≈ 模型安全失守的 proxy**
+
+---
+
+### **3.3 图表洞察（核心结论）**
+
+#### **① J-score 分布：两类数据天然分离**
+
+* ASR=0：J ∈ [0, 0.25]
+* ASR=1：J ∈ [1.0, 1.8]
+
+→ **呈现强烈的线性可分性**
+
+---
+
+#### **② (S, I) 平面的散点图**
+
+* ASR=1 的点集中在 **右上角 (高 S，高 I)**
+* Refusal=1 的点集中在 **左上角 (低 S，高 I)**
+
+→ 多模态行为进入两大模式：
+**执行模式**（高 S） vs **谨慎模式**（高 I）
+
+---
+
+#### **③ Logistic Surface（ASR/Risk）**
+
+* S 从 0→1，ASR 从 0→0.95
+* I 的存在使整张曲面显著抬升
+* 曲面不是线性的 → **S×I 交互必不可少**
+
+---
+
+#### **④ 固定 I 的横截面曲线：**
+
+三条曲线：
+
+* I=0 → 最低
+* I=0.5 → 中
+* I=1 → 最高
+
+→ 明确展示“不一致性作为协同增益倍增器”的作用。
+
+---
+
+# **4. Issues & Bug Tracking**
+
+### **已修复的问题**
+
+* `plot_J_hist()` 参数冲突：已重构为标准调用格式。
+* S,I,SI 的构造逻辑统一，避免 key error。
+* `R_tv` 缺失 id 问题已处理（跳过无 txt_img 的行）。
+
+### **待处理的问题**
+
+* 对于 S=0 的数据点数量多，是否需要单独建模（baseline region）。
+* I 的归一化是否需要 test-time 权重平滑（目前使用 Min–Max）。
+
+---
+
+# **5. Next Actions**
+
+### **（1）加入 J-score 的 ROC / AUC 分析**
+
+* 验证 J(x) 是否可作为越狱预测器
+* 输出 AUC(ASR), AUC(Refusal), AUC(Risk)
+
+### **（2）加入边际效应图（Marginal Effects）**
+
+* ∂P/∂S | I
+* ∂P/∂I | S
+
+有助于论文的因果解释部分。
+
+### **（3）引入 Shapley / IG 解释模型参数**
+
+用于解释 Logistic 模型的贡献度。
+
+### **（4）撰写论文 Results Section（我可帮你）**
+
+内容包含：
+
+* Figure 3: Joint Synergy–Inconsistency scatter
+* Figure 4: Logistic surfaces
+* Figure 5: J-score distributions
+* Figure 6: Cross-sectional curves
+
+### **（5）代码整合与模块化**
+
+将所有绘图函数迁移至：
+
+```
+src/metrics/plots/
+```
+
+---
+
+# **6. Commit & Sync**
+
+### 建议 commit message：
+
+```
+feat(metrics): add full joint S–I logistic modeling + 8 visualization plots
+
+- Implemented synergy_joint_logreg.py with S/I/SxI features
+- Added ASR, Risk, Refusal logistic models
+- Added J-score histogram, grouped distribution, bucket bars
+- Added scatter & cross-sectional predicted probability plots
+- Fixed plot_J_hist signature and call patterns
+- Updated data loader for risk & inconsistency
+```
+
+如需，我可以帮你生成完整 diff patch 或自动整理为 PR。
+
+---
+
+如果你愿意，我还可以继续生成：
+
+* 今日图表版 PDF 报告
+* 可直接加入论文的“Joint Analysis”段落
+* 更高级别的统计建模（如 GAM、probit、混合效应模型）
+
+你想继续哪个方向？

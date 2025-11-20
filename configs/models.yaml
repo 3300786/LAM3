@@ -4,3 +4,9 @@ llava15_7b:
 idefics2_8b:
   repo_id: HuggingFaceM4/idefics2-8b
   revision: main
+llama32_11b:
+  repo_id: /data2/wangjingsong/modelscope_cache/models/LLM-Research/Llama-3___2-11B-Vision-Instruct
+  revision: main
+clip_vit_32:
+  repo_id: /data2/wangjingsong/models/openai_clip_vit_b32
+  revision: main

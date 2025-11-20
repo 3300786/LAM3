@@ -77,6 +77,9 @@ def build_query(
         # 情况2：已经是仓库内的完整相对路径，如 "data/JailBreakV_28K/xxx"
         elif image_rel.startswith("data/"):
             ipath = Path(image_rel)
+
+
+
         # 情况3：纯相对路径，如 "llm_transfer_attack/xxx.png"
         else:
             ipath = dataset_root / image_rel

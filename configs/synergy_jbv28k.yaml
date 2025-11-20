@@ -2,11 +2,13 @@
 data:
   synergy_jbv28k:
     original_root: "data/JailBreakV_28K"
+    #data_file: "data/JailBreakV_28K/JailBreakV_28K.csv"
     data_file: "data/JailBreakV_28K/mini_JailBreakV_28K.csv"
     # 暂时先假设图像都在 figstep 下面，后续根据 CSV 里的列名再精确修
     image_root: "data/JailBreakV_28K"
     prompt_key: "jailbreak_query"
     image_key: "image_path"
+    #meta_path: "data/synergy_jbv28k/jbv28k_meta.jsonl"
     meta_path: "data/synergy_jbv28k/jbv28k_mini_meta.jsonl"
 
 
@@ -15,7 +17,7 @@ eval:
   modes: ["txt_img", "txt_only", "img_only", "none"]
 
 model:
-  name: "llava15_7b"        # 或 "idefics2_8b"，按你的 registry 替换
+  name: "llama32_11b"        # 或 "idefics2_8b"，按你的 registry 替换
   device: "cuda:0"
   # 以下视你的 registry 而定，这里只占位
   models_cfg_path: "configs/models.yaml"
@@ -23,7 +25,9 @@ model:
   max_new_tokens: 256
   min_new_tokens: 1
 log:
+  #raw_log_path: "outputs/logs/synergy_jbv28k_raw.jsonl"
+  #metric_path: "outputs/metrics/synergy_jbv28k_scores.jsonl"
+  #summary_path: "outputs/metrics/synergy_jbv28k_scores.summary.json"
   raw_log_path: "outputs/logs/synergy_jbv28k_mini_raw.jsonl"
-  # raw_log_path: "outputs/metrics/synergy_jbv28k_synergy_subset_qwen_judge.jsonl"
   metric_path: "outputs/metrics/synergy_jbv28k_mini_scores.jsonl"
   summary_path: "outputs/metrics/synergy_jbv28k_mini_scores.summary.json"
