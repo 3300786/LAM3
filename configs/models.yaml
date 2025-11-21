@@ -10,3 +10,6 @@ llama32_11b:
 clip_vit_32:
   repo_id: /data2/wangjingsong/models/openai_clip_vit_b32
   revision: main
+qwen25_0_5b_ppl:
+  repo_id: /data2/wangjingsong/models/qwen2.5-0.5b
+  revision: main

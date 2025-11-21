@@ -3,14 +3,12 @@ from typing import Dict
 from src.models.llava15 import Llava15Wrapper
 from src.models.idefics2 import Idefics2Wrapper
 from src.models.llama32 import Llama32VisionWrapper
-from src.models.clip_cross import ClipCrossEncoderWrapper
 from src.models.base import MLLM
 
 WRAPPER_CLS: Dict[str, type] = {
     "llava15_7b": Llava15Wrapper,
     "idefics2_8b": Idefics2Wrapper,
     "llama32_11b": Llama32VisionWrapper,
-    "clip_vit_32": ClipCrossEncoderWrapper,
 }
 
 

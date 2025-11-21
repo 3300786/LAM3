@@ -1,7 +1,0 @@
-precision: bf16           # 备选: fp16
-load_in_4bit: true
-device_map: auto
-max_new_tokens: 256
-temperature: 0.2
-top_p: 0.9
-seed: 42

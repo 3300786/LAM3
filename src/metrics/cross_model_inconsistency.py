@@ -20,6 +20,9 @@ from openai import OpenAI
 from src.models.base import MLLM
 from src.utils.runtime import GenCfg
 
+import yaml
+from src.utils.ppl_utils import load_ppl_model, compute_ppl
+
 # ===================== Qwen judge 配置 =====================
 
 SYSTEM_PROMPT = """
@@ -205,22 +208,6 @@ def compute_cross_modal_D_for_file(
         - "cm_image_emb": List[float] (1D)
 
     后续可用于 PCA / 判别方向投影等可视化。
-
-    参数:
-        raw_in:           原始 JSONL，逐行一个样本。
-        out_with_D:       输出 JSONL，每行在原始字段基础上增加:
-                             - "cross_modal_D"
-                             - "cross_modal_cos"
-                             - "cm_text_emb"
-                             - "cm_image_emb"
-        mllm:             已构建好的多模态模型封装 (继承自 MLLM)，必须实现
-                          encode_modalities(image, prompt, gen_cfg=None)。
-        image_field_candidates: 依次尝试的图像字段名。
-        text_field_candidates:  依次尝试的文本字段名。
-        mode_field:       若不为 None，则按该字段筛选模式。
-        required_mode_value:  mode 必须等于该值才会参与计算（默认只保留 "txt_img"）。
-        gen_cfg:          传给 encode_modalities 的生成配置；如果只是做表征，
-                          可以传 None，Wrapper 内部自行忽略。
     """
     if image_field_candidates is None:
         image_field_candidates = ["image_path", "img_path", "image", "img"]
@@ -306,7 +293,7 @@ def compute_cross_modal_D_for_file(
         e_text_norm = F.normalize(e_text, dim=-1)
         e_image_norm = F.normalize(e_image, dim=-1)
 
-        # 保证在同一 device 上做点积（encode_modalities 已经放到合适 device）
+        # 保证在同一 device 上做点积
         if e_text_norm.device != e_image_norm.device:
             e_image_norm = e_image_norm.to(e_text_norm.device)
 
@@ -361,11 +348,18 @@ def _quantiles(sorted_vals: List[float], qs: List[float]) -> List[float]:
     return res
 
 
-def load_samples_from_judged(judged_path: Path) -> List[Dict[str, Any]]:
+def load_samples_from_judged(
+    judged_path: Path,
+    ppl_model=None,
+    ppl_tokenizer=None,
+    ppl_device=None,
+    ppl_max_length: int = 512,
+) -> List[Dict[str, Any]]:
     """
     从含有 cross_modal_D + qwen_judge 的 JSONL 文件中加载样本。
     只保留含有 D 和 qwen_judge 的记录。
     若文件中包含 cm_text_emb / cm_image_emb，则一并读出。
+    若提供 PPL 模型，则对每条 output 计算 PPL，并记录到 "ppl" 字段。
     """
     samples: List[Dict[str, Any]] = []
     with judged_path.open("r", encoding="utf-8") as f:
@@ -388,12 +382,33 @@ def load_samples_from_judged(judged_path: Path) -> List[Dict[str, Any]]:
             t_emb = obj.get("cm_text_emb")
             i_emb = obj.get("cm_image_emb")
 
+            # 计算 PPL（可选）
+            output_text = obj.get("output", "") or ""
+            ppl_val: Optional[float] = None
+            if (
+                ppl_model is not None
+                and ppl_tokenizer is not None
+                and ppl_device is not None
+                and output_text
+            ):
+                try:
+                    ppl_val = compute_ppl(
+                        model=ppl_model,
+                        tokenizer=ppl_tokenizer,
+                        text=output_text,
+                        device=ppl_device,
+                        max_length=ppl_max_length,
+                    )
+                except Exception:
+                    ppl_val = None
+
             s: Dict[str, Any] = {
                 "D": D_val,
                 "toxicity": toxicity,
                 "asr": asr,
                 "refusal": refusal,
                 "is_safe": is_safe,
+                "ppl": ppl_val,
                 "raw": obj,
             }
             if isinstance(t_emb, list) and isinstance(i_emb, list):
@@ -408,10 +423,36 @@ def load_samples_from_judged(judged_path: Path) -> List[Dict[str, Any]]:
 
 def analyze_by_D_buckets(samples: List[Dict[str, Any]], out_dir: Path) -> None:
     """
-    按 D(x) 分桶 (low / mid / high)，比较 ASR / Refusal / Toxicity。
+    按 D(x) 分桶 (low / mid / high)，比较 ASR / Refusal / Toxicity / PPL。
     生成多种 2D / 3D / 表征空间图表。
+
+    目录结构约定：
+      out_dir/
+        cross_modal_inconsistency_summary.json
+        D/
+          D_hist.png
+          D_vs_toxicity.png
+          D_vs_ASR_refusal_binned_CI.png
+        buckets/
+          bucket_asr_refusal.png
+          bucket_3d_D_ASR_Tox.png
+        embed/
+          proj_hist_D_buckets.png
+          arrow_pca_sampled.png
+        ppl/
+          ppl_hist.png
+          ppl_vs_D_scatter.png
+          ppl_vs_asr_boxplot.png
     """
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # 子目录
+    D_dir = out_dir / "D"
+    bucket_dir = out_dir / "buckets"
+    embed_dir = out_dir / "embed"
+    ppl_dir = out_dir / "ppl"
+    for d in [D_dir, bucket_dir, embed_dir, ppl_dir]:
+        d.mkdir(parents=True, exist_ok=True)
 
     # 统一绘图风格
     plt.rcParams.update(
@@ -429,10 +470,31 @@ def analyze_by_D_buckets(samples: List[Dict[str, Any]], out_dir: Path) -> None:
         }
     )
 
-    Ds = [s["D"] for s in samples]
-    tox_list = [s["toxicity"] for s in samples]
-    asr_list = [1.0 if s["asr"] else 0.0 for s in samples]
-    refusal_list = [1.0 if s["refusal"] else 0.0 for s in samples]
+    Ds: List[float] = []
+    tox_list: List[float] = []
+    asr_list: List[float] = []
+    refusal_list: List[float] = []
+    ppl_all: List[float] = []
+    D_for_ppl: List[float] = []
+    ppl_asr1: List[float] = []
+    ppl_asr0: List[float] = []
+
+    for s in samples:
+        Ds.append(s["D"])
+        tox_list.append(s["toxicity"])
+        asr_val = 1.0 if s["asr"] else 0.0
+        refusal_val = 1.0 if s["refusal"] else 0.0
+        asr_list.append(asr_val)
+        refusal_list.append(refusal_val)
+
+        ppl_val = s.get("ppl", None)
+        if isinstance(ppl_val, (int, float)) and ppl_val > 0.0:
+            ppl_all.append(float(ppl_val))
+            D_for_ppl.append(s["D"])
+            if s["asr"]:
+                ppl_asr1.append(float(ppl_val))
+            else:
+                ppl_asr0.append(float(ppl_val))
 
     D_mean = _mean(Ds)
     D_std = _std(Ds)
@@ -440,10 +502,14 @@ def analyze_by_D_buckets(samples: List[Dict[str, Any]], out_dir: Path) -> None:
     global_refusal = _mean(refusal_list)
     global_tox = _mean(tox_list)
 
+    ppl_mean = _mean(ppl_all) if ppl_all else 0.0
+    ppl_std = _std(ppl_all) if ppl_all else 0.0
+
     print("\n[metrics] === Global stats (over all D) ===")
     print(f"  N = {len(samples)}")
     print(f"  D_mean = {D_mean:.4f}, D_std = {D_std:.4f}, D_min = {min(Ds):.4f}, D_max = {max(Ds):.4f}")
     print(f"  ASR = {global_asr:.3f}, Refusal = {global_refusal:.3f}, Toxicity = {global_tox:.2f}")
+    print(f"  PPL: N={len(ppl_all)}, mean={ppl_mean:.2f}, std={ppl_std:.2f}")
 
     # ---------- D 分桶 ----------
     sorted_D = sorted(Ds)
@@ -472,12 +538,19 @@ def analyze_by_D_buckets(samples: List[Dict[str, Any]], out_dir: Path) -> None:
                 "ASR": 0.0,
                 "Refusal": 0.0,
                 "Toxicity": 0.0,
+                "PPL_mean": 0.0,
+                "PPL_std": 0.0,
             }
             continue
         Ds_b = [x["D"] for x in arr]
         asr_b = [1.0 if x["asr"] else 0.0 for x in arr]
         ref_b = [1.0 if x["refusal"] else 0.0 for x in arr]
         tox_b = [x["toxicity"] for x in arr]
+        ppl_b = [
+            float(x["ppl"])
+            for x in arr
+            if isinstance(x.get("ppl"), (int, float)) and x["ppl"] > 0.0
+        ]
         bucket_summary[name] = {
             "n": len(arr),
             "D_mean": _mean(Ds_b),
@@ -485,6 +558,9 @@ def analyze_by_D_buckets(samples: List[Dict[str, Any]], out_dir: Path) -> None:
             "ASR": _mean(asr_b),
             "Refusal": _mean(ref_b),
             "Toxicity": _mean(tox_b),
+            "PPL_mean": _mean(ppl_b) if ppl_b else 0.0,
+            "PPL_std": _std(ppl_b) if ppl_b else 0.0,
+            "PPL_N": len(ppl_b),
         }
 
     print("\n[metrics] === Bucketed by D(x) (low / mid / high) ===")
@@ -494,40 +570,32 @@ def analyze_by_D_buckets(samples: List[Dict[str, Any]], out_dir: Path) -> None:
         print(
             f"  bucket={name:4s}  n={info['n']:4d}  "
             f"D_mean={info['D_mean']:.4f}  ASR={info['ASR']:.3f}  "
-            f"Refusal={info['Refusal']:.3f}  Tox={info['Toxicity']:.2f}"
+            f"Refusal={info['Refusal']:.3f}  Tox={info['Toxicity']:.2f}  "
+            f"PPL_mean={info['PPL_mean']:.2f} (N={info.get('PPL_N', 0)})"
         )
+
     def _corr(xs: List[float], ys: List[float]) -> float:
-
         if not xs or len(xs) != len(ys):
-
             return 0.0
-
         m_x, m_y = _mean(xs), _mean(ys)
-
         num = sum((x - m_x) * (y - m_y) for x, y in zip(xs, ys))
-
         den_x = math.sqrt(sum((x - m_x) ** 2 for x in xs))
-
         den_y = math.sqrt(sum((y - m_y) ** 2 for y in ys))
-
         if den_x == 0 or den_y == 0:
-
             return 0.0
-
         return num / (den_x * den_y)
 
-
-
     corr_D_ASR = _corr(Ds, asr_list)
-
     corr_D_Refusal = _corr(Ds, refusal_list)
-
-
+    corr_D_Tox = _corr(Ds, tox_list)
+    corr_D_PPL = _corr(D_for_ppl, ppl_all) if D_for_ppl and ppl_all else 0.0
 
     print(f"  corr(D, ASR) = {corr_D_ASR:.4f}")
-
     print(f"  corr(D, Refusal) = {corr_D_Refusal:.4f}")
-    # 保存 summary JSON
+    print(f"  corr(D, Toxicity) = {corr_D_Tox:.4f}")
+    print(f"  corr(D, PPL) = {corr_D_PPL:.4f}")
+
+    # 保存 summary JSON（放在模型目录根）
     summary = {
         "global": {
             "N": len(samples),
@@ -536,6 +604,13 @@ def analyze_by_D_buckets(samples: List[Dict[str, Any]], out_dir: Path) -> None:
             "ASR": global_asr,
             "Refusal": global_refusal,
             "Toxicity": global_tox,
+            "PPL_N": len(ppl_all),
+            "PPL_mean": ppl_mean,
+            "PPL_std": ppl_std,
+            "corr_D_ASR": corr_D_ASR,
+            "corr_D_Refusal": corr_D_Refusal,
+            "corr_D_Toxicity": corr_D_Tox,
+            "corr_D_PPL": corr_D_PPL,
         },
         "D_quantiles": {"q33": q33, "q66": q66},
         "buckets": bucket_summary,
@@ -557,7 +632,7 @@ def analyze_by_D_buckets(samples: List[Dict[str, Any]], out_dir: Path) -> None:
         plt.legend(frameon=False)
         plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.5)
         plt.tight_layout()
-        out_path = out_dir / "D_hist.png"
+        out_path = D_dir / "D_hist.png"
         plt.savefig(out_path, dpi=300)
         plt.close()
         print(f"[plot] saved {out_path}")
@@ -582,7 +657,7 @@ def analyze_by_D_buckets(samples: List[Dict[str, Any]], out_dir: Path) -> None:
         plt.grid(True, linestyle="--", linewidth=0.5, axis="y", alpha=0.5)
         plt.legend(frameon=False)
         plt.tight_layout()
-        out_path = out_dir / "bucket_asr_refusal.png"
+        out_path = bucket_dir / "bucket_asr_refusal.png"
         plt.savefig(out_path, dpi=300)
         plt.close()
         print(f"[plot] saved {out_path}")
@@ -614,7 +689,7 @@ def analyze_by_D_buckets(samples: List[Dict[str, Any]], out_dir: Path) -> None:
         plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.5)
         plt.legend(frameon=False)
         plt.tight_layout()
-        out_path = out_dir / "D_vs_toxicity.png"
+        out_path = D_dir / "D_vs_toxicity.png"
         plt.savefig(out_path, dpi=300)
         plt.close()
         print(f"[plot] saved {out_path}")
@@ -649,7 +724,7 @@ def analyze_by_D_buckets(samples: List[Dict[str, Any]], out_dir: Path) -> None:
         ax.set_zlabel("Toxicity (normalized)")
         ax.set_title("3D structure of buckets\n(D, ASR, Toxicity)")
         plt.tight_layout()
-        out_path = out_dir / "bucket_3d_D_ASR_Tox.png"
+        out_path = bucket_dir / "bucket_3d_D_ASR_Tox.png"
         plt.savefig(out_path, dpi=300)
         plt.close()
         print(f"[plot] saved {out_path}")
@@ -660,15 +735,10 @@ def analyze_by_D_buckets(samples: List[Dict[str, Any]], out_dir: Path) -> None:
     def _plot_D_vs_ASR_smooth():
         """
         Binned ASR / Refusal vs D(x) with bootstrap 95% CI.
-        - 横轴：D(x) 分箱中心
-        - 纵轴：各箱中 ASR / Refusal 平均值
-        - 阴影：bootstrap 置信区间
-        - 竖线：q33 / q66，用于对齐 bucket 分析
         """
-        import random  # 局部导入，避免全局依赖
+        import random
 
         def _bootstrap_ci(vals: List[float], n_boot: int = 300, alpha: float = 0.05):
-            """对一个 [0,1] 比例列表做 bootstrap 置信区间。"""
             if not vals:
                 return None
             if len(vals) == 1:
@@ -685,16 +755,13 @@ def analyze_by_D_buckets(samples: List[Dict[str, Any]], out_dir: Path) -> None:
             return (means[lo_idx], means[hi_idx])
 
         if len(Ds) < 20:
-            # 样本太少就不画这张图
             return
 
         D_min, D_max = min(Ds), max(Ds)
-        # 分成 8 个等宽箱；如果样本更少，可以自动变成 5 箱
         num_bins = 8
         if len(Ds) < 120:
             num_bins = 5
 
-        # 构造等宽 bin 边界
         edges = []
         for i in range(num_bins + 1):
             t = i / num_bins
@@ -710,7 +777,6 @@ def analyze_by_D_buckets(samples: List[Dict[str, Any]], out_dir: Path) -> None:
 
         for b in range(num_bins):
             left, right = edges[b], edges[b + 1]
-            # 最后一箱右端点包含
             bin_indices = [
                 i for i, d in enumerate(Ds)
                 if (d >= left and (d < right or (b == num_bins - 1 and d <= right)))
@@ -750,7 +816,6 @@ def analyze_by_D_buckets(samples: List[Dict[str, Any]], out_dir: Path) -> None:
         plt.plot(bin_centers, ref_means, label="Refusal (binned mean)")
         plt.fill_between(bin_centers, ref_ci_l, ref_ci_u, alpha=0.15)
 
-        # 标出 q33 / q66 位置，方便和 bucket 图对齐
         plt.axvline(q33, color="gray", linestyle="--", linewidth=1.0, label="q33")
         plt.axvline(q66, color="gray", linestyle="-.", linewidth=1.0, label="q66")
 
@@ -760,15 +825,14 @@ def analyze_by_D_buckets(samples: List[Dict[str, Any]], out_dir: Path) -> None:
         plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.5)
         plt.legend(frameon=False)
         plt.tight_layout()
-
-        out_path = out_dir / "D_vs_ASR_refusal_binned_CI.png"
+        out_path = D_dir / "D_vs_ASR_refusal_binned_CI.png"
         plt.savefig(out_path, dpi=300)
         plt.close()
         print(f"[plot] saved {out_path}")
 
     _plot_D_vs_ASR_smooth()
 
-    # ---------- 新图 6: 判别方向投影直方图 (diff -> low/high D) ----------
+    # ---------- 新图 6: 判别方向投影直方图 ----------
     def _plot_discriminative_projection_hist():
         # 需要表征
         if not any("text_emb" in s for s in samples):
@@ -834,7 +898,7 @@ def analyze_by_D_buckets(samples: List[Dict[str, Any]], out_dir: Path) -> None:
         plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.5)
         plt.legend(frameon=False)
         plt.tight_layout()
-        out_path = out_dir / "proj_hist_D_buckets.png"
+        out_path = embed_dir / "proj_hist_D_buckets.png"
         plt.savefig(out_path, dpi=300)
         plt.close()
         print(f"[plot] saved {out_path}")
@@ -871,13 +935,10 @@ def analyze_by_D_buckets(samples: List[Dict[str, Any]], out_dir: Path) -> None:
         mean = all_emb.mean(dim=0, keepdim=True)
         X = all_emb - mean
 
-        # SVD 求前两主成分
-        # (2N x d) -> (2N x 2)
         try:
             U, S, Vh = torch.linalg.svd(X, full_matrices=False)
             W = Vh[:2].T  # d x 2
         except Exception:
-            # 回退：简单 PCA 近似
             cov = X.t() @ X / float(X.shape[0])
             eigvals, eigvecs = torch.linalg.eigh(cov)
             idx = torch.argsort(eigvals, descending=True)[:2]
@@ -887,7 +948,6 @@ def analyze_by_D_buckets(samples: List[Dict[str, Any]], out_dir: Path) -> None:
         T2d = X2d[:N]
         I2d = X2d[N:]
 
-        # 每个 bucket 采样固定数量的箭头
         idx_by_bucket: Dict[str, List[int]] = {"low": [], "mid": [], "high": []}
         for idx, tag in enumerate(tags):
             idx_by_bucket[tag].append(idx)
@@ -921,7 +981,6 @@ def analyze_by_D_buckets(samples: List[Dict[str, Any]], out_dir: Path) -> None:
                     head_length=0.04,
                 )
 
-        # 再绘制少量起点以增加参照
         for b in ["low", "mid", "high"]:
             xs = [I2d[idx][0].item() for idx in sampled_indices[b]]
             ys = [I2d[idx][1].item() for idx in sampled_indices[b]]
@@ -937,12 +996,72 @@ def analyze_by_D_buckets(samples: List[Dict[str, Any]], out_dir: Path) -> None:
         plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.5)
         plt.legend(frameon=False)
         plt.tight_layout()
-        out_path = out_dir / "arrow_pca_sampled.png"
+        out_path = embed_dir / "arrow_pca_sampled.png"
         plt.savefig(out_path, dpi=300)
         plt.close()
         print(f"[plot] saved {out_path}")
 
     _plot_sampled_arrow_pca()
+
+    # ---------- PPL 相关图 ----------
+    def _plot_ppl_hist():
+        if not ppl_all:
+            return
+        plt.figure()
+        plt.hist(ppl_all, bins=30, density=True, alpha=0.8)
+        plt.xlabel("Perplexity (PPL)")
+        plt.ylabel("Density")
+        plt.title("PPL Distribution (txt+img outputs)")
+        plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.5)
+        plt.tight_layout()
+        out_path = ppl_dir / "ppl_hist.png"
+        plt.savefig(out_path, dpi=300)
+        plt.close()
+        print(f"[plot] saved {out_path}")
+
+    _plot_ppl_hist()
+
+    def _plot_ppl_vs_D_scatter():
+        if not ppl_all or not D_for_ppl:
+            return
+        plt.figure()
+        plt.scatter(D_for_ppl, ppl_all, s=16, alpha=0.5)
+        plt.xlabel("Cross-modal inconsistency D(x)")
+        plt.ylabel("Perplexity (PPL)")
+        plt.title("PPL vs D(x)")
+        plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.5)
+        plt.tight_layout()
+        out_path = ppl_dir / "ppl_vs_D_scatter.png"
+        plt.savefig(out_path, dpi=300)
+        plt.close()
+        print(f"[plot] saved {out_path}")
+
+    _plot_ppl_vs_D_scatter()
+
+    def _plot_ppl_vs_asr_boxplot():
+        if not ppl_asr0 and not ppl_asr1:
+            return
+        data = []
+        labels = []
+        if ppl_asr0:
+            data.append(ppl_asr0)
+            labels.append("ASR=0")
+        if ppl_asr1:
+            data.append(ppl_asr1)
+            labels.append("ASR=1")
+
+        plt.figure(figsize=(5, 4))
+        plt.boxplot(data, tick_labels=labels, showfliers=False)
+        plt.ylabel("Perplexity (PPL)")
+        plt.title("PPL vs Attack Success (txt+img)")
+        plt.grid(True, axis="y", linestyle="--", linewidth=0.5, alpha=0.5)
+        plt.tight_layout()
+        out_path = ppl_dir / "ppl_vs_asr_boxplot.png"
+        plt.savefig(out_path, dpi=300)
+        plt.close()
+        print(f"[plot] saved {out_path}")
+
+    _plot_ppl_vs_asr_boxplot()
 
 
 # ===================== main: 串起完整实验流程 =====================
@@ -969,18 +1088,17 @@ def main():
     ap.add_argument(
         "--metrics_dir",
         required=True,
-        help="输出: 指标与图表目录",
-    )
-    # 使用 MLLM 封装类而不是 CLIP
-    ap.add_argument(
-        "--mllm_name",
-        required=True,
-        help="用于计算 D(x) 的多模态模型名称（在 models 配置中注册的 key）",
+        help="输出: 指标与图表目录（根目录，将在其下按 mllm_name 建立子目录）",
     )
     ap.add_argument(
         "--models_cfg",
         required=True,
         help="models 配置 YAML 路径，用于通过 registry 构建 MLLM",
+    )
+    ap.add_argument(
+        "--cfg",
+        required=True,
+        help="synergy 配置 YAML 路径",
     )
     ap.add_argument(
         "--device",
@@ -1002,17 +1120,41 @@ def main():
         action="store_true",
         help="若设置，则跳过 Qwen judge，直接使用 judged_out 文件做指标",
     )
+    ap.add_argument(
+        "--ppl_max_length",
+        type=int,
+        default=512,
+        help="PPL 计算时的最大 token 长度",
+    )
     args = ap.parse_args()
 
     raw_in = Path(args.raw_in)
     with_D = Path(args.with_D)
     judged_out = Path(args.judged_out)
-    metrics_dir = Path(args.metrics_dir)
+
+    # metrics_dir 作为根目录，在其下按 mllm_name 建立子目录
+    try:
+        with open(args.cfg, "r", encoding="utf-8") as f:
+            synergy_cfg = yaml.safe_load(f)
+        model_name = synergy_cfg.get("model", {}).get("name", None)
+        if not model_name:
+            model_name = "unknown_model"
+            print(
+                f"[cfg] WARNING: model.name not found in {args.cfg}, "
+                f"use default '{model_name}'"
+            )
+    except Exception as e:
+        model_name = "unknown_model"
+        print(
+            f"[cfg] WARNING: failed to load {args.cfg}, "
+            f"use default model name '{model_name}'. Error: {e}"
+        )
+    metrics_root = Path(args.metrics_dir)
+    model_metrics_dir = metrics_root / model_name
 
     # Step 1: 计算跨模态不一致性 D(x)（基于目标 MLLM）
     if not args.skip_embed:
         from src.models.registry import build_model
-        import yaml
 
         with open(args.models_cfg, "r", encoding="utf-8") as f:
             models_cfg = yaml.safe_load(f)
@@ -1022,7 +1164,7 @@ def main():
         }
 
         mllm: MLLM = build_model(
-            name=args.mllm_name,
+            name=model_name,
             models_cfg=models_cfg,
             runtime_cfg=runtime_cfg,
         )
@@ -1051,9 +1193,33 @@ def main():
     else:
         print("[main] skip_judge=True, use existing judged_out file")
 
-    # Step 3: 基于 D(x) 的脆弱性分析 + 作图
-    samples = load_samples_from_judged(judged_out)
-    analyze_by_D_buckets(samples=samples, out_dir=metrics_dir)
+    # Step 2.5: 尝试加载本地 PPL 模型（Qwen3-0.6B 或你在 models.yaml 中配置的 ppl 模型）
+    ppl_model = ppl_tokenizer = ppl_device = None
+    try:
+        with open("configs/models.yaml", "r", encoding="utf-8") as f:
+            models_cfg_full = yaml.safe_load(f)
+        with open("configs/runtime.yaml", "r", encoding="utf-8") as f:
+            runtime_cfg_full = yaml.safe_load(f)
+        ppl_model, ppl_tokenizer, ppl_device = load_ppl_model(
+            models_cfg=models_cfg_full,
+            model_name="qwen25_0_5b_ppl",  # 需在 models.yaml 中配置
+            runtime_cfg=runtime_cfg_full,
+        )
+    except Exception as e:
+        print(
+            f"[PPL] WARNING: failed to load PPL model; PPL metrics will be skipped. "
+            f"Error: {e}"
+        )
+
+    # Step 3: 基于 D(x) 的脆弱性分析 + 作图（可选带 PPL）
+    samples = load_samples_from_judged(
+        judged_out,
+        ppl_model=ppl_model,
+        ppl_tokenizer=ppl_tokenizer,
+        ppl_device=ppl_device,
+        ppl_max_length=args.ppl_max_length,
+    )
+    analyze_by_D_buckets(samples=samples, out_dir=model_metrics_dir)
 
 
 if __name__ == "__main__":
