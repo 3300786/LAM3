@@ -236,7 +236,7 @@ If LAM3 is used in academic work:
 
 ```text
 Wang et al. 
-“LAM3: Leaky Alignment in Multi-Modal Models.”
+“LAM3: Leak Alignment in Multi-Modal Models.”
 2025. GitHub Repository: https://github.com/3300786/LAM3
 ```
 
