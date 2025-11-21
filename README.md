@@ -3,7 +3,7 @@
 
 # **LAM3: Leak Alignment in Multi-Modal Models**
 
-**Leaky Alignment in Multi-Modal Models (LAM3)** is a research framework for analyzing **alignment leakage**, **cross-modal inconsistencies**, and **multimodal jailbreak vulnerabilities** in modern MLLMs.
+**Leak Alignment in Multi-Modal Models (LAM3)** is a research framework for analyzing **alignment leakage**, **cross-modal inconsistencies**, and **multimodal jailbreak vulnerabilities** in modern MLLMs.
 LAM3 provides an end-to-end reproducible pipeline for:
 
 * **Multimodal jailbreak attack evaluation**
