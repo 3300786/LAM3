@@ -6,7 +6,10 @@ min_new_tokens: 64
 temperature: 1.0
 top_p: 0.95
 seed: 42
+batch_size: 8
+
 do_sample: true
+attn_implementation: auto   # auto / sdpa / flash / eager
 
 quantization:
   enabled: true           # 统一开关；替代旧的 load_in_4bit

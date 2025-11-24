@@ -2,7 +2,7 @@
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, List
 
 import yaml
 from PIL import Image
@@ -34,7 +34,6 @@ def iter_meta(path, max_samples=None):
             yield json.loads(line)
 
 
-
 # ----------------------------------------------------
 # Null image
 # ----------------------------------------------------
@@ -53,40 +52,44 @@ def ensure_null_image(dataset_root: Path) -> str:
 
 
 # ----------------------------------------------------
-# Query builder
+# Image resolver + Query builder
 # ----------------------------------------------------
+def resolve_image_abs(case: Dict, dataset_root: Path) -> Optional[str]:
+    """
+    将 case 中的 image_path 解析为绝对路径（若文件存在），否则返回 None。
+    只解析一次，避免在多 mode 下重复 Path / is_file。
+    """
+    image_rel = case.get("image_path", None)
+    if not image_rel:
+        return None
+
+    image_rel = str(image_rel)
+    p = Path(image_rel)
+
+    # 情况1：绝对路径，直接用
+    if p.is_absolute():
+        ipath = p
+    # 情况2：已经是仓库内的完整相对路径，如 "data/JailBreakV_28K/xxx"
+    elif image_rel.startswith("data/"):
+        ipath = Path(image_rel)
+    # 情况3：纯相对路径，如 "llm_transfer_attack/xxx.png"
+    else:
+        ipath = dataset_root / image_rel
+
+    return str(ipath) if ipath.is_file() else None
+
+
 def build_query(
-    case: Dict, mode: str, dataset_root: Path, null_image_path: str
-) -> Tuple[str, Optional[str]]:
+    case: Dict,
+    mode: str,
+    img_abs: Optional[str],
+    null_image_path: str,
+) -> Tuple[str, str]:
     """
     返回 prompt 与 image_path 字符串（与 smoke_test 对齐）。
-    - text_attack: 文本攻击提示
-    - image_path: 可能是相对路径（相对于 dataset_root），也可能是 "data/..." 这种仓库内全路径
+    img_abs: 已经解析好的绝对路径（或 None）。
     """
     text_attack = case.get("text_attack", "") or ""
-    image_rel = case.get("image_path", None)
-
-    img_abs = None
-    if image_rel:
-        image_rel = str(image_rel)
-        p = Path(image_rel)
-
-        # 情况1：绝对路径，直接用
-        if p.is_absolute():
-            ipath = p
-        # 情况2：已经是仓库内的完整相对路径，如 "data/JailBreakV_28K/xxx"
-        elif image_rel.startswith("data/"):
-            ipath = Path(image_rel)
-
-
-
-        # 情况3：纯相对路径，如 "llm_transfer_attack/xxx.png"
-        else:
-            ipath = dataset_root / image_rel
-
-        # 只在文件真实存在时才使用该路径
-        if ipath.is_file():
-            img_abs = str(ipath)
 
     if mode == "txt_img":
         prompt = text_attack
@@ -102,10 +105,8 @@ def build_query(
         image = null_image_path
     else:
         raise ValueError(f"Unknown mode: {mode}")
-    # print(prompt, image)
+
     return prompt, image
-
-
 
 
 # ----------------------------------------------------
@@ -139,8 +140,12 @@ def build_model_and_gen(m_cfg: Dict):
 # ----------------------------------------------------
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--cfg", type=str, required=True,
-                        help="configs/synergy_jbv28k.yaml")
+    parser.add_argument(
+        "--cfg",
+        type=str,
+        required=True,
+        help="configs/synergy_jbv28k.yaml",
+    )
     args = parser.parse_args()
 
     cfg = load_cfg(args.cfg)
@@ -154,6 +159,7 @@ def main():
 
     modes = e_cfg["modes"]
     max_samples = e_cfg.get("max_samples", None)
+    batch_size: int = e_cfg.get("batch_size", 4)  # 新增：批量大小，可在 yaml 中配置
 
     raw_log_path = Path(l_cfg["raw_log_path"])
     raw_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -162,29 +168,83 @@ def main():
     null_image_path = ensure_null_image(dataset_root)
 
     # 模型
-
     model, gen_cfg = build_model_and_gen(m_cfg)
 
     # 为迭代器计数：构造 list 才能 tqdm
     cases = list(iter_meta(meta_path, max_samples=max_samples))
-
     print(f"[run] total samples = {len(cases)}")
+    print(f"[run] batch_size = {batch_size}")
+
+    # 如果 wrapper 支持 generate_batch 则优先使用，否则退回单样本 generate
+    has_generate_batch = callable(getattr(model, "generate_batch", None))
 
     # 主循环（带进度条）
+    buffer: List[Tuple[str, str, str, str]] = []  # (cid, mode, prompt, img)
+
     with raw_log_path.open("w", encoding="utf-8") as fout:
         for case in tqdm(cases, desc="Processing samples", ncols=100):
             cid = case["id"]
-            for mode in modes:
-                prompt, img = build_query(case, mode, dataset_root, null_image_path)
-                text = model.generate(img, prompt, gen_cfg)
+            img_abs = resolve_image_abs(case, dataset_root)
 
+            for mode in modes:
+                prompt, img = build_query(case, mode, img_abs, null_image_path)
+                buffer.append((cid, mode, prompt, img))
+
+                if len(buffer) >= batch_size:
+                    # 批量推理
+                    cids = [x[0] for x in buffer]
+                    modes_b = [x[1] for x in buffer]
+                    prompts_b = [x[2] for x in buffer]
+                    imgs_b = [x[3] for x in buffer]
+
+                    if has_generate_batch:
+                        texts = model.generate_batch(imgs_b, prompts_b, gen_cfg)
+                    else:
+                        texts = [
+                            model.generate(img, prompt, gen_cfg)
+                            for img, prompt in zip(imgs_b, prompts_b)
+                        ]
+
+                    for cid_i, mode_i, prompt_i, img_i, text_i in zip(
+                        cids, modes_b, prompts_b, imgs_b, texts
+                    ):
+                        log = {
+                            "id": cid_i,
+                            "mode": mode_i,
+                            "model": m_cfg["name"],
+                            "prompt": prompt_i,
+                            "image": img_i,
+                            "output": text_i,
+                        }
+                        fout.write(json.dumps(log, ensure_ascii=False) + "\n")
+
+                    buffer.clear()
+
+        # 收尾：处理最后不足一个 batch 的样本
+        if buffer:
+            cids = [x[0] for x in buffer]
+            modes_b = [x[1] for x in buffer]
+            prompts_b = [x[2] for x in buffer]
+            imgs_b = [x[3] for x in buffer]
+
+            if has_generate_batch:
+                texts = model.generate_batch(imgs_b, prompts_b, gen_cfg)
+            else:
+                texts = [
+                    model.generate(img, prompt, gen_cfg)
+                    for img, prompt in zip(imgs_b, prompts_b)
+                ]
+
+            for cid_i, mode_i, prompt_i, img_i, text_i in zip(
+                cids, modes_b, prompts_b, imgs_b, texts
+            ):
                 log = {
-                    "id": cid,
-                    "mode": mode,
+                    "id": cid_i,
+                    "mode": mode_i,
                     "model": m_cfg["name"],
-                    "prompt": prompt,
-                    "image": img,
-                    "output": text,
+                    "prompt": prompt_i,
+                    "image": img_i,
+                    "output": text_i,
                 }
                 fout.write(json.dumps(log, ensure_ascii=False) + "\n")
 
