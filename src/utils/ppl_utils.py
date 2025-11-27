@@ -12,6 +12,7 @@ PPL 模型不是 MLLM，不走 registry 的 wrapper。
 
 from __future__ import annotations
 import math
+from os import system
 from typing import Tuple, Dict, Any
 
 import torch
@@ -77,6 +78,13 @@ def load_ppl_model(
         low_cpu_mem_usage=True,
         local_files_only=True,
     ).to(device).eval()
+    # 1) 只在需要时设置 pad_token
+    if tokenizer.pad_token is None:
+        # 对 Qwen 系列官方推荐就是用 eos 作为 pad
+        tokenizer.pad_token = tokenizer.eos_token
+
+    if model.config.pad_token_id is None:
+        model.config.pad_token_id = tokenizer.pad_token_id
 
     _PPL_MODEL = model
     _PPL_TOKENIZER = tokenizer

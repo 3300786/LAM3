@@ -4,11 +4,13 @@ from src.models.llava15 import Llava15Wrapper
 from src.models.idefics2 import Idefics2Wrapper
 from src.models.llama32 import Llama32VisionWrapper
 from src.models.base import MLLM
-
+from src.models.qwen25 import Qwen25VLWrapper
 WRAPPER_CLS: Dict[str, type] = {
     "llava15_7b": Llava15Wrapper,
     "idefics2_8b": Idefics2Wrapper,
     "llama32_11b": Llama32VisionWrapper,
+    "qwen25_vl_3b_judge": Qwen25VLWrapper,
+    "qwen25_vl_7b_judge": Qwen25VLWrapper,
 }
 
 

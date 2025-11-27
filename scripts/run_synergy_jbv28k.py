@@ -2,7 +2,7 @@
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, Tuple, Optional, List
+from typing import Dict, Tuple, Optional, List, Set
 
 import yaml
 from PIL import Image
@@ -32,6 +32,41 @@ def iter_meta(path, max_samples=None):
             if limit is not None and i >= limit:
                 break
             yield json.loads(line)
+
+
+def load_completed_pairs(log_path: Path) -> Set[Tuple[str, str]]:
+    """
+    从已有的 raw.jsonl 中加载已经完成的 (id, mode)。
+    若文件不存在，则返回空集合。
+    """
+    completed: Set[Tuple[str, str]] = set()
+    if not log_path.is_file():
+        return completed
+
+    n_lines = 0
+    n_ok = 0
+    with log_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            n_lines += 1
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            cid = obj.get("id", None)
+            mode = obj.get("mode", None)
+            if cid is None or mode is None:
+                continue
+            completed.add((str(cid), str(mode)))
+            n_ok += 1
+
+    print(
+        f"[resume] loaded {n_ok} completed (id, mode) pairs "
+        f"from {log_path} (lines={n_lines})"
+    )
+    return completed
 
 
 # ----------------------------------------------------
@@ -146,6 +181,18 @@ def main():
         required=True,
         help="configs/synergy_jbv28k.yaml",
     )
+    parser.add_argument(
+        "--num_shards",
+        type=int,
+        default=1,
+        help="总 shard 数，用于多卡切片。默认为 1（不切片）。",
+    )
+    parser.add_argument(
+        "--shard_idx",
+        type=int,
+        default=0,
+        help="当前进程的 shard 索引（0-based）。仅当 num_shards > 1 时生效。",
+    )
     args = parser.parse_args()
 
     cfg = load_cfg(args.cfg)
@@ -159,7 +206,12 @@ def main():
 
     modes = e_cfg["modes"]
     max_samples = e_cfg.get("max_samples", None)
-    batch_size: int = e_cfg.get("batch_size", 4)  # 新增：批量大小，可在 yaml 中配置
+    batch_size: int = e_cfg.get("batch_size", 4)  # 可在 yaml 中配置
+
+    num_shards: int = max(1, int(getattr(args, "num_shards", 1)))
+    shard_idx: int = int(getattr(args, "shard_idx", 0))
+    if shard_idx < 0 or shard_idx >= num_shards:
+        raise ValueError(f"shard_idx={shard_idx} out of range for num_shards={num_shards}")
 
     raw_log_path = Path(l_cfg["raw_log_path"])
     raw_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -167,58 +219,100 @@ def main():
     # 占位图
     null_image_path = ensure_null_image(dataset_root)
 
+    # 读取已完成的 (id, mode)，用于 resume
+    completed_pairs = load_completed_pairs(raw_log_path)
+
     # 模型
     model, gen_cfg = build_model_and_gen(m_cfg)
 
     # 为迭代器计数：构造 list 才能 tqdm
     cases = list(iter_meta(meta_path, max_samples=max_samples))
     print(f"[run] total samples = {len(cases)}")
+    print(f"[run] modes = {modes}")
     print(f"[run] batch_size = {batch_size}")
+    print(f"[run] num_shards = {num_shards}, shard_idx = {shard_idx}")
+
+    # 1) 基于 meta 构造所有“待完成任务”（过滤掉已完成的 id+mode）
+    #    每个任务为 (cid, mode, prompt, img)
+    tasks: List[Tuple[str, str, str, str]] = []
+    for case in cases:
+        cid = str(case["id"])
+        img_abs = resolve_image_abs(case, dataset_root)
+        for mode in modes:
+            key = (cid, str(mode))
+            if key in completed_pairs:
+                continue
+            prompt, img = build_query(case, str(mode), img_abs, null_image_path)
+            tasks.append((cid, str(mode), prompt, img))
+
+    total_tasks = len(tasks)
+    print(
+        f"[run] pending tasks after resume filter = {total_tasks} "
+        f"(skipped {len(completed_pairs)} completed pairs)"
+    )
+
+    if total_tasks == 0:
+        print("[run] nothing to do, all (id, mode) pairs already completed.")
+        return
+
+    # 2) 在“待完成任务”上做 shard 切分
+    if num_shards > 1:
+        shard_tasks = [
+            task for idx, task in enumerate(tasks) if idx % num_shards == shard_idx
+        ]
+    else:
+        shard_tasks = tasks
+
+    print(
+        f"[run] shard {shard_idx}/{num_shards}: "
+        f"{len(shard_tasks)} tasks to process."
+    )
+
+    if not shard_tasks:
+        print("[run] this shard has no tasks to process. exit.")
+        return
 
     # 如果 wrapper 支持 generate_batch 则优先使用，否则退回单样本 generate
     has_generate_batch = callable(getattr(model, "generate_batch", None))
 
-    # 主循环（带进度条）
+    # 主循环（对 shard_tasks 进行 batch 推理）
     buffer: List[Tuple[str, str, str, str]] = []  # (cid, mode, prompt, img)
 
-    with raw_log_path.open("w", encoding="utf-8") as fout:
-        for case in tqdm(cases, desc="Processing samples", ncols=100):
-            cid = case["id"]
-            img_abs = resolve_image_abs(case, dataset_root)
+    # 以 append 模式写入，避免覆盖已有日志，实现 resume
+    with raw_log_path.open("a", encoding="utf-8") as fout:
+        for cid, mode, prompt, img in tqdm(
+            shard_tasks, desc="Processing tasks", ncols=100
+        ):
+            buffer.append((cid, mode, prompt, img))
 
-            for mode in modes:
-                prompt, img = build_query(case, mode, img_abs, null_image_path)
-                buffer.append((cid, mode, prompt, img))
+            if len(buffer) >= batch_size:
+                cids = [x[0] for x in buffer]
+                modes_b = [x[1] for x in buffer]
+                prompts_b = [x[2] for x in buffer]
+                imgs_b = [x[3] for x in buffer]
 
-                if len(buffer) >= batch_size:
-                    # 批量推理
-                    cids = [x[0] for x in buffer]
-                    modes_b = [x[1] for x in buffer]
-                    prompts_b = [x[2] for x in buffer]
-                    imgs_b = [x[3] for x in buffer]
+                if has_generate_batch:
+                    texts = model.generate_batch(imgs_b, prompts_b, gen_cfg)
+                else:
+                    texts = [
+                        model.generate(img, prompt, gen_cfg)
+                        for img, prompt in zip(imgs_b, prompts_b)
+                    ]
 
-                    if has_generate_batch:
-                        texts = model.generate_batch(imgs_b, prompts_b, gen_cfg)
-                    else:
-                        texts = [
-                            model.generate(img, prompt, gen_cfg)
-                            for img, prompt in zip(imgs_b, prompts_b)
-                        ]
+                for cid_i, mode_i, prompt_i, img_i, text_i in zip(
+                    cids, modes_b, prompts_b, imgs_b, texts
+                ):
+                    log = {
+                        "id": cid_i,
+                        "mode": mode_i,
+                        "model": m_cfg["name"],
+                        "prompt": prompt_i,
+                        "image": img_i,
+                        "output": text_i,
+                    }
+                    fout.write(json.dumps(log, ensure_ascii=False) + "\n")
 
-                    for cid_i, mode_i, prompt_i, img_i, text_i in zip(
-                        cids, modes_b, prompts_b, imgs_b, texts
-                    ):
-                        log = {
-                            "id": cid_i,
-                            "mode": mode_i,
-                            "model": m_cfg["name"],
-                            "prompt": prompt_i,
-                            "image": img_i,
-                            "output": text_i,
-                        }
-                        fout.write(json.dumps(log, ensure_ascii=False) + "\n")
-
-                    buffer.clear()
+                buffer.clear()
 
         # 收尾：处理最后不足一个 batch 的样本
         if buffer:
@@ -248,7 +342,7 @@ def main():
                 }
                 fout.write(json.dumps(log, ensure_ascii=False) + "\n")
 
-    print(f"[run] raw logs saved to {raw_log_path}")
+    print(f"[run] raw logs (including previous + new) saved to {raw_log_path}")
 
 
 if __name__ == "__main__":
