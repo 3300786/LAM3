@@ -91,7 +91,64 @@ def load_ppl_model(
 
     return _PPL_MODEL, _PPL_TOKENIZER, _PPL_DEVICE
 
+# src/utils/ppl_utils.py
 
+import math
+from typing import Tuple, Dict, Any, Union, List
+
+import torch
+from transformers import AutoTokenizer, AutoModelForCausalLM
+
+# 省略前面 load_ppl_model 的代码，不变...
+
+
+# -------------------------------------------------------------
+# 计算 perplexity（支持 str 或 List[str]）
+# -------------------------------------------------------------
+
+@torch.no_grad()
+def compute_ppl(
+    model,
+    tokenizer,
+    texts: Union[str, List[str]],
+    device: torch.device,
+    max_length: int = 512,
+) -> float:
+    """
+    计算给定文本的 PPL:
+      - 如果输入是 str，则视作单条样本；
+      - 如果输入是 List[str]，则按 batch 编码，并对整个 batch 的 NLL 做平均再 exp。
+
+    返回值：整个 batch 的平均 perplexity。
+    """
+    # 统一成 List[str]
+    if isinstance(texts, str):
+        texts = [texts]
+
+    # tokenizer 需要 padding=True 才能在 batch 下用 return_tensors="pt"
+    enc = tokenizer(
+        texts,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+        max_length=max_length,
+    )
+
+    input_ids = enc["input_ids"].to(device)
+    attention_mask = enc["attention_mask"].to(device)
+
+    # 典型自回归 LM loss（会对 batch 和序列长度做平均）
+    out = model(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        labels=input_ids,
+    )
+
+    nll = out.loss.item()   # 平均 NLL
+    ppl = math.exp(nll)
+    return ppl
+
+"""
 # -------------------------------------------------------------
 # 计算 perplexity
 # -------------------------------------------------------------
@@ -122,3 +179,4 @@ def compute_ppl(
     nll = out.loss.item()
     ppl = math.exp(nll)
     return ppl
+"""
