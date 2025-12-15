@@ -1,3 +1,4 @@
+
 # scripts/vis_llava15_cross_attn.py
 
 import argparse
@@ -11,7 +12,6 @@ from PIL import Image
 import yaml
 from tqdm import tqdm
 from src.models.registry import build_model
-from src.models.llava15 import Llava15Wrapper  # 需要你已有的 wrapper
 from src.models.base import MLLM  # 仅用于类型标注，可选
 
 
@@ -93,7 +93,7 @@ def load_samples_with_D(path: Path) -> List[Dict[str, Any]]:
 
 
 # ----------------------------------------------------------------------
-# 绘图函数：mean 曲线（hidden-state similarity proxy）
+# 绘图函数：mean 曲线
 # ----------------------------------------------------------------------
 
 
@@ -103,46 +103,40 @@ def _plot_layer_curves(
 ) -> None:
     colors = {"low": "tab:blue", "mid": "tab:orange", "high": "tab:green"}
 
-    # t->i (这里实际是 cos(text, image))
+    # t->i
     plt.figure(figsize=(6.0, 4.0))
     for bname, stats in stats_by_bucket.items():
         y = stats.get("mean_t2i", [])
         if not y:
             continue
         x = list(range(len(y)))
-        plt.plot(x, y, label=f"{bname} D (sim t<->i)", color=colors.get(bname, None))
+        plt.plot(x, y, label=f"{bname} D (t->i)", color=colors.get(bname, None))
     plt.xlabel("Layer index")
-    plt.ylabel("Mean hidden-state similarity cos(text, image)")
-    plt.title(
-        "LLaVA-1.5 hidden-state similarity vs layer\n"
-        "for low/mid/high D buckets"
-    )
+    plt.ylabel("Mean cross-attn (text -> image)")
+    plt.title("LLaVA-1.5 cross-attn (t->i) vs layer\nfor low/mid/high D buckets")
     plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.5)
     plt.legend(frameon=False)
     plt.tight_layout()
-    out_path = out_dir / "llava15_hidden_sim_layers_t2i.png"
+    out_path = out_dir / "llava15_cross_attn_t2i_layers.png"
     plt.savefig(out_path, dpi=300)
     plt.close()
     print(f"[plot] saved {out_path}")
 
-    # i->t（同一 proxy，保留第二条曲线便于对比）
+    # i->t
     plt.figure(figsize=(6.0, 4.0))
     for bname, stats in stats_by_bucket.items():
         y = stats.get("mean_i2t", [])
         if not y:
             continue
         x = list(range(len(y)))
-        plt.plot(x, y, label=f"{bname} D (sim t<->i)", color=colors.get(bname, None))
+        plt.plot(x, y, label=f"{bname} D (i->t)", color=colors.get(bname, None))
     plt.xlabel("Layer index")
-    plt.ylabel("Mean hidden-state similarity cos(text, image)")
-    plt.title(
-        "LLaVA-1.5 hidden-state similarity vs layer\n"
-        "for low/mid/high D buckets (i2t view)"
-    )
+    plt.ylabel("Mean cross-attn (image -> text)")
+    plt.title("LLaVA-1.5 cross-attn (i->t) vs layer\nfor low/mid/high D buckets")
     plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.5)
     plt.legend(frameon=False)
     plt.tight_layout()
-    out_path = out_dir / "llava15_hidden_sim_layers_i2t.png"
+    out_path = out_dir / "llava15_cross_attn_i2t_layers.png"
     plt.savefig(out_path, dpi=300)
     plt.close()
     print(f"[plot] saved {out_path}")
@@ -166,22 +160,14 @@ def _plot_layer_std_curves(
         if not y:
             continue
         x = list(range(len(y)))
-        plt.plot(
-            x,
-            y,
-            label=f"{bname} D (std sim)",
-            color=colors.get(bname, None),
-        )
+        plt.plot(x, y, label=f"{bname} D (t->i std)", color=colors.get(bname, None))
     plt.xlabel("Layer index")
-    plt.ylabel("Std of hidden-state similarity cos(text, image)")
-    plt.title(
-        "LLaVA-1.5 similarity std vs layer\n"
-        "for low/mid/high D buckets (t2i)"
-    )
+    plt.ylabel("Std of cross-attn (text -> image)")
+    plt.title("LLaVA-1.5 cross-attn std (t->i) vs layer\nfor low/mid/high D buckets")
     plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.5)
     plt.legend(frameon=False)
     plt.tight_layout()
-    out_path = out_dir / "llava15_hidden_sim_layers_std_t2i.png"
+    out_path = out_dir / "llava15_cross_attn_t2i_layers_std.png"
     plt.savefig(out_path, dpi=300)
     plt.close()
     print(f"[plot] saved {out_path}")
@@ -193,29 +179,21 @@ def _plot_layer_std_curves(
         if not y:
             continue
         x = list(range(len(y)))
-        plt.plot(
-            x,
-            y,
-            label=f"{bname} D (std sim)",
-            color=colors.get(bname, None),
-        )
+        plt.plot(x, y, label=f"{bname} D (i->t std)", color=colors.get(bname, None))
     plt.xlabel("Layer index")
-    plt.ylabel("Std of hidden-state similarity cos(text, image)")
-    plt.title(
-        "LLaVA-1.5 similarity std vs layer\n"
-        "for low/mid/high D buckets (i2t)"
-    )
+    plt.ylabel("Std of cross-attn (image -> text)")
+    plt.title("LLaVA-1.5 cross-attn std (i->t) vs layer\nfor low/mid/high D buckets")
     plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.5)
     plt.legend(frameon=False)
     plt.tight_layout()
-    out_path = out_dir / "llava15_hidden_sim_layers_std_i2t.png"
+    out_path = out_dir / "llava15_cross_attn_i2t_layers_std.png"
     plt.savefig(out_path, dpi=300)
     plt.close()
     print(f"[plot] saved {out_path}")
 
 
 # ----------------------------------------------------------------------
-# 绘图函数：D vs mean-sim / D vs std 散点
+# 绘图函数：D vs mean-attn / D vs std 散点
 # ----------------------------------------------------------------------
 
 
@@ -237,12 +215,12 @@ def _plot_scatter_D_vs_attn(
             continue
         plt.scatter(xs, ys, label=bname, alpha=0.8, s=24, color=colors.get(bname, None))
     plt.xlabel("cross_modal_D")
-    plt.ylabel("mean hidden-state similarity cos(text, image)")
-    plt.title("D(x) vs mean similarity (i2t view)")
+    plt.ylabel("mean cross-attn (i->t)")
+    plt.title("D(x) vs mean cross-attn (image -> text)")
     plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.5)
     plt.legend(frameon=False)
     plt.tight_layout()
-    out_path = out_dir / "llava15_D_vs_mean_sim_i2t_scatter.png"
+    out_path = out_dir / "llava15_D_vs_mean_i2t_scatter.png"
     plt.savefig(out_path, dpi=300)
     plt.close()
     print(f"[plot] saved {out_path}")
@@ -256,12 +234,12 @@ def _plot_scatter_D_vs_attn(
             continue
         plt.scatter(xs, ys, label=bname, alpha=0.8, s=24, color=colors.get(bname, None))
     plt.xlabel("cross_modal_D")
-    plt.ylabel("mean hidden-state similarity cos(text, image)")
-    plt.title("D(x) vs mean similarity (t2i view)")
+    plt.ylabel("mean cross-attn (t->i)")
+    plt.title("D(x) vs mean cross-attn (text -> image)")
     plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.5)
     plt.legend(frameon=False)
     plt.tight_layout()
-    out_path = out_dir / "llava15_D_vs_mean_sim_t2i_scatter.png"
+    out_path = out_dir / "llava15_D_vs_mean_t2i_scatter.png"
     plt.savefig(out_path, dpi=300)
     plt.close()
     print(f"[plot] saved {out_path}")
@@ -274,7 +252,7 @@ def _plot_scatter_D_vs_std(
     bucket_ids: List[str],
     out_dir: Path,
 ) -> None:
-    """散点：D vs per-sample layer-std（similarity proxy）"""
+    """散点：D vs per-sample layer-std（i->t / t->i）"""
     colors = {"low": "tab:blue", "mid": "tab:orange", "high": "tab:green"}
 
     # i->t std
@@ -286,12 +264,12 @@ def _plot_scatter_D_vs_std(
             continue
         plt.scatter(xs, ys, label=bname, alpha=0.8, s=24, color=colors.get(bname, None))
     plt.xlabel("cross_modal_D")
-    plt.ylabel("layer-wise std of similarity cos(text, image)")
-    plt.title("D(x) vs layer-wise std of similarity (i2t view)")
+    plt.ylabel("layer-wise std of cross-attn (i->t)")
+    plt.title("D(x) vs layer-wise std (image -> text)")
     plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.5)
     plt.legend(frameon=False)
     plt.tight_layout()
-    out_path = out_dir / "llava15_D_vs_layer_std_sim_i2t_scatter.png"
+    out_path = out_dir / "llava15_D_vs_layer_std_i2t_scatter.png"
     plt.savefig(out_path, dpi=300)
     plt.close()
     print(f"[plot] saved {out_path}")
@@ -305,12 +283,12 @@ def _plot_scatter_D_vs_std(
             continue
         plt.scatter(xs, ys, label=bname, alpha=0.8, s=24, color=colors.get(bname, None))
     plt.xlabel("cross_modal_D")
-    plt.ylabel("layer-wise std of similarity cos(text, image)")
-    plt.title("D(x) vs layer-wise std of similarity (t2i view)")
+    plt.ylabel("layer-wise std of cross-attn (t->i)")
+    plt.title("D(x) vs layer-wise std (text -> image)")
     plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.5)
     plt.legend(frameon=False)
     plt.tight_layout()
-    out_path = out_dir / "llava15_D_vs_layer_std_sim_t2i_scatter.png"
+    out_path = out_dir / "llava15_D_vs_layer_std_t2i_scatter.png"
     plt.savefig(out_path, dpi=300)
     plt.close()
     print(f"[plot] saved {out_path}")
@@ -341,13 +319,13 @@ def _plot_histograms(
             label=bname,
             color=colors.get(bname, None),
         )
-    plt.xlabel("mean similarity cos(text, image)")
+    plt.xlabel("mean cross-attn (i->t)")
     plt.ylabel("Density")
-    plt.title("Distribution of mean similarity (i2t view) by D buckets")
+    plt.title("Distribution of mean cross-attn (i->t) by D buckets")
     plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.5)
     plt.legend(frameon=False)
     plt.tight_layout()
-    out_path = out_dir / "llava15_mean_sim_i2t_hist_by_bucket.png"
+    out_path = out_dir / "llava15_mean_i2t_hist_by_bucket.png"
     plt.savefig(out_path, dpi=300)
     plt.close()
     print(f"[plot] saved {out_path}")
@@ -366,13 +344,13 @@ def _plot_histograms(
             label=bname,
             color=colors.get(bname, None),
         )
-    plt.xlabel("mean similarity cos(text, image)")
+    plt.xlabel("mean cross-attn (t->i)")
     plt.ylabel("Density")
-    plt.title("Distribution of mean similarity (t2i view) by D buckets")
+    plt.title("Distribution of mean cross-attn (t->i) by D buckets")
     plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.5)
     plt.legend(frameon=False)
     plt.tight_layout()
-    out_path = out_dir / "llava15_mean_sim_t2i_hist_by_bucket.png"
+    out_path = out_dir / "llava15_mean_t2i_hist_by_bucket.png"
     plt.savefig(out_path, dpi=300)
     plt.close()
     print(f"[plot] saved {out_path}")
@@ -392,13 +370,13 @@ def _plot_histograms(
             label=bname,
             color=colors.get(bname, None),
         )
-    plt.xlabel("per-sample layer-wise std of similarity (i2t)")
+    plt.xlabel("per-sample layer-wise std (i->t)")
     plt.ylabel("Density")
-    plt.title("Distribution of layer-wise std (i2t view) by D buckets")
+    plt.title("Distribution of layer-wise std (i->t) by D buckets")
     plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.5)
     plt.legend(frameon=False)
     plt.tight_layout()
-    out_path = out_dir / "llava15_layer_std_sim_i2t_hist_by_bucket.png"
+    out_path = out_dir / "llava15_layer_std_i2t_hist_by_bucket.png"
     plt.savefig(out_path, dpi=300)
     plt.close()
     print(f"[plot] saved {out_path}")
@@ -417,20 +395,20 @@ def _plot_histograms(
             label=bname,
             color=colors.get(bname, None),
         )
-    plt.xlabel("per-sample layer-wise std of similarity (t2i)")
+    plt.xlabel("per-sample layer-wise std (t->i)")
     plt.ylabel("Density")
-    plt.title("Distribution of layer-wise std (t2i view) by D buckets")
+    plt.title("Distribution of layer-wise std (t->i) by D buckets")
     plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.5)
     plt.legend(frameon=False)
     plt.tight_layout()
-    out_path = out_dir / "llava15_layer_std_sim_t2i_hist_by_bucket.png"
+    out_path = out_dir / "llava15_layer_std_t2i_hist_by_bucket.png"
     plt.savefig(out_path, dpi=300)
     plt.close()
     print(f"[plot] saved {out_path}")
 
 
 # ----------------------------------------------------------------------
-# 绘图函数：基于 (D, similarity) -> ASR 的热图 / 曲面
+# 绘图函数：基于 (D, attn) -> ASR 的热图 / 曲面
 # ----------------------------------------------------------------------
 
 
@@ -442,7 +420,7 @@ def _plot_D_attn_asr_surface(
     direction: str = "i2t",
 ) -> None:
     """
-    基于 (D, similarity) -> ASR 的网格，画 2D heatmap + 3D surface。
+    基于 (D, attn) -> ASR 的网格，画 2D heatmap + 3D surface。
     direction: "i2t" 或 "t2i"，仅用于文件名和标题。
     """
     # 过滤掉无 ASR 的样本
@@ -487,15 +465,15 @@ def _plot_D_attn_asr_surface(
     )
     plt.xlabel("cross_modal_D")
     ylabel = (
-        "mean similarity cos(text, image) (i2t view)"
+        "mean cross-attn (i->t)"
         if direction == "i2t"
-        else "mean similarity cos(text, image) (t2i view)"
+        else "mean cross-attn (t->i)"
     )
     plt.ylabel(ylabel)
-    plt.title(f"ASR heatmap over (D, similarity) [{direction}]")
+    plt.title(f"ASR heatmap over (D, {direction})")
     plt.colorbar(im, label="ASR")
     plt.tight_layout()
-    out_path = out_dir / f"llava15_D_{direction}_sim_ASR_heatmap.png"
+    out_path = out_dir / f"llava15_D_{direction}_ASR_heatmap.png"
     plt.savefig(out_path, dpi=300)
     plt.close()
     print(f"[plot] saved {out_path}")
@@ -509,9 +487,9 @@ def _plot_D_attn_asr_surface(
     ax.set_xlabel("cross_modal_D")
     ax.set_ylabel(ylabel)
     ax.set_zlabel("ASR")
-    ax.set_title(f"ASR surface over (D, similarity) [{direction}]")
+    ax.set_title(f"ASR surface over (D, {direction})")
     plt.tight_layout()
-    out_path = out_dir / f"llava15_D_{direction}_sim_ASR_surface.png"
+    out_path = out_dir / f"llava15_D_{direction}_ASR_surface.png"
     plt.savefig(out_path, dpi=300)
     plt.close()
     print(f"[plot] saved {out_path}")
@@ -559,7 +537,7 @@ def main() -> None:
     mllm_name = args.mllm_name
     k = args.k_per_bucket
 
-    out_dir = Path("outputs/metrics/vis_cross_attn/max/")
+    out_dir = Path("outputs/metrics/vis_cross_attn/mini")
     out_dir.mkdir(parents=True, exist_ok=True)
     out_dir = out_dir / mllm_name
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -721,23 +699,23 @@ def main() -> None:
         stats["std_t2i"] = std_t2i
         stats["std_i2t"] = std_i2t
 
-    # 4. 相关系数（mean similarity）
+    # 4. 相关系数（mean）
     corr_t2i = _pearson_corr(D_all, mean_t2i_all)
     corr_i2t = _pearson_corr(D_all, mean_i2t_all)
     print(
-        f"[corr] Pearson corr(D, mean_sim_t2i) = {corr_t2i:.4f} "
-        "(higher D -> weaker similarity ?)"
+        f"[corr] Pearson corr(D, mean_t2i) = {corr_t2i:.4f} "
+        "(higher D -> weaker t->i ?)"
     )
     print(
-        f"[corr] Pearson corr(D, mean_sim_i2t) = {corr_i2t:.4f} "
-        "(higher D -> weaker similarity ?)"
+        f"[corr] Pearson corr(D, mean_i2t) = {corr_i2t:.4f} "
+        "(higher D -> weaker i->t ?)"
     )
 
     # 5. 绘图：layer-wise mean / std 曲线
     _plot_layer_curves(stats_by_bucket, out_dir)
     _plot_layer_std_curves(stats_by_bucket, out_dir)
 
-    # 6. 绘图：D vs mean-sim / D vs layer-std 散点
+    # 6. 绘图：D vs mean-attn / D vs layer-std 散点
     _plot_scatter_D_vs_attn(D_all, mean_i2t_all, mean_t2i_all, bucket_ids, out_dir)
     _plot_scatter_D_vs_std(
         D_all, layer_std_i2t_all, layer_std_t2i_all, bucket_ids, out_dir
@@ -746,7 +724,7 @@ def main() -> None:
     # 7. 绘图：mean & layer-std 直方图
     _plot_histograms(stats_by_bucket, out_dir)
 
-    # 8. 绘图：基于 (D, mean-sim) -> ASR 的热图 / 曲面（i->t & t->i）
+    # 8. 绘图：基于 (D, mean-attn) -> ASR 的热图 / 曲面（i->t & t->i）
     _plot_D_attn_asr_surface(D_all, mean_i2t_all, asr_all, out_dir, direction="i2t")
     _plot_D_attn_asr_surface(D_all, mean_t2i_all, asr_all, out_dir, direction="t2i")
 

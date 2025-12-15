@@ -18,8 +18,8 @@ import re
 @dataclass
 class CrossAttnLayerStat:
     layer: int
-    t2i: float  # text -> image attention strength
-    i2t: float  # image -> text attention strength
+    t2i: float  # here: hidden-state similarity proxy (cos(text, image))
+    i2t: float  # same proxy, kept for compatibility
 
 
 class Llava15Wrapper(MLLM):
@@ -48,7 +48,7 @@ class Llava15Wrapper(MLLM):
             .eval()
         )
 
-        # 记录当前的 attention 实现；默认不修改，保持最快（一般为 sdpa/flash）
+        # 记录当前的 attention 实现；这里只读不改，避免 output_attentions 限制
         self._default_attn_impl: Optional[str] = None
         if hasattr(self.model, "get_attn_implementation"):
             try:
@@ -339,7 +339,7 @@ class Llava15Wrapper(MLLM):
         return cleaned
 
     # =====================================================================
-    # 模态表征 + Cross-Attn Trace 接口
+    # 模态表征 + Layer-wise hidden-state similarity 接口
     # =====================================================================
 
     @torch.inference_mode()
@@ -358,7 +358,7 @@ class Llava15Wrapper(MLLM):
               "image": (d,)
             }
 
-        内部会构造一次「图 + 文」联合输入，并在某一层 hidden_state 上
+        内部会构造一次「图 + 文」联合输入，并在 repr_layer hidden_state 上
         对 text / image token 做平均池化。
         """
         feats, _ = self._encode_mm_internal(
@@ -377,43 +377,23 @@ class Llava15Wrapper(MLLM):
         **kwargs,
     ) -> Tuple[Dict[str, torch.Tensor], List[CrossAttnLayerStat]]:
         """
-        同 encode_modalities，但额外返回每一层的 text->image / image->text attention 强度：
+        同 encode_modalities，但额外返回每一层的
+        hidden-state similarity proxy（cosine(text, image)）：
 
             feats, layer_stats = encode_modalities_with_trace(...)
 
             feats = {"text": (d,), "image": (d,)}
             layer_stats = [
-              CrossAttnLayerStat(layer=0, t2i=..., i2t=...),
-              CrossAttnLayerStat(layer=1, ...),
+              CrossAttnLayerStat(layer=0, t2i=sim_0, i2t=sim_0),
+              CrossAttnLayerStat(layer=1, t2i=sim_1, i2t=sim_1),
               ...
             ]
         """
-        # 对 trace 场景临时切换到 eager（如支持），仅在此处关闭高效注意力实现
-        prev_impl: Optional[str] = None
-        can_switch = hasattr(self.model, "get_attn_implementation") and hasattr(
-            self.model, "set_attn_implementation"
+        feats, layer_stats = self._encode_mm_internal(
+            image=image,
+            prompt=prompt,
+            need_trace=True,
         )
-        if can_switch:
-            try:
-                prev_impl = self.model.get_attn_implementation()
-                self.model.set_attn_implementation("eager")
-            except Exception:
-                prev_impl = None
-
-        try:
-            feats, layer_stats = self._encode_mm_internal(
-                image=image,
-                prompt=prompt,
-                need_trace=True,
-            )
-        finally:
-            # 恢复原本的 attention 实现
-            if can_switch and prev_impl is not None:
-                try:
-                    self.model.set_attn_implementation(prev_impl)
-                except Exception:
-                    pass
-
         return feats, layer_stats
 
     @torch.inference_mode()
@@ -458,29 +438,29 @@ class Llava15Wrapper(MLLM):
         input_ids = enc["input_ids"]
         attention_mask = enc["attention_mask"]
 
-        # ---- 2) 前向推理，拿到 hidden_states / attentions ----
+        # ---- 2) 前向推理，拿到 hidden_states ----
         outputs = self.model(
             **enc,
             output_hidden_states=True,
-            output_attentions=need_trace,
             return_dict=True,
         )
 
         # hidden_states: tuple(len = n_layers + 1)
         hidden_states = outputs.hidden_states
+
+        # ---- 3) 构建 text / image 掩码（只需一次）----
+        text_mask, image_mask = self._build_modal_masks(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+        )
+
+        # ---- 4) 计算 repr_layer 上的 text / image 表征 ----
         idx = self.repr_layer
         if idx < 0:
             idx = len(hidden_states) + idx
         hidden = hidden_states[idx]   # (batch=1, seq, dim)
         seq_hidden = hidden[0]        # (seq, dim)
 
-        # ---- 3) 构建 text / image 掩码 ----
-        text_mask, image_mask = self._build_modal_masks(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-        )
-
-        # ---- 4) 计算 text / image 表征 ----
         e_text = self._mean_pool_hidden(seq_hidden, text_mask)      # (dim,)
         e_image = self._mean_pool_hidden(seq_hidden, image_mask)    # (dim,)
 
@@ -491,40 +471,33 @@ class Llava15Wrapper(MLLM):
 
         layer_stats: List[CrossAttnLayerStat] = []
 
-        # ---- 5) 如需 trace，则基于 attentions 统计 t2i / i2t ----
-        if need_trace and hasattr(outputs, "attentions") and outputs.attentions is not None:
-            # outputs.attentions: tuple(n_layers) of (batch=1, n_heads, seq, seq)
-            attn_list = list(outputs.attentions)
+        # ---- 5) 如需 trace，则基于每一层 hidden_state 计算 cos(text, image) ----
+        if need_trace:
+            # hidden_states[0] 是 embedding 层，后面每一层对应一个 transformer block
+            num_layers = len(hidden_states) - 1
+            for layer_idx in range(num_layers):
+                # 对应第 layer_idx 个 transformer 层：hidden_states[layer_idx + 1]
+                h_l = hidden_states[layer_idx + 1][0]  # (seq, dim)
 
-            # (seq,) -> (1, 1, seq, 1) / (1, 1, 1, seq)
-            t_query = text_mask.view(1, 1, -1, 1)
-            i_query = image_mask.view(1, 1, -1, 1)
-            t_key = text_mask.view(1, 1, 1, -1)
-            i_key = image_mask.view(1, 1, 1, -1)
+                e_text_l = self._mean_pool_hidden(h_l, text_mask)   # (dim,)
+                e_image_l = self._mean_pool_hidden(h_l, image_mask) # (dim,)
 
-            for layer_idx, att in enumerate(attn_list):
-                # att: (1, n_heads, seq, seq)
-                # Text -> Image
-                t2i_vals = att * t_query * i_key
-                denom_t2i = (t_query * i_key).sum().item()
-                if denom_t2i > 0:
-                    t2i_mean = t2i_vals.sum().item() / denom_t2i
-                else:
-                    t2i_mean = 0.0
+                # cosine similarity 作为 hidden-state similarity proxy
+                sim = F.cosine_similarity(
+                    e_text_l.unsqueeze(0),
+                    e_image_l.unsqueeze(0),
+                    dim=-1,
+                    eps=1e-6,
+                )[0].item()
 
-                # Image -> Text
-                i2t_vals = att * i_query * t_key
-                denom_i2t = (i_query * t_key).sum().item()
-                if denom_i2t > 0:
-                    i2t_mean = i2t_vals.sum().item() / denom_i2t
-                else:
-                    i2t_mean = 0.0
+                if not (sim == sim):  # NaN 检查
+                    sim = 0.0
 
                 layer_stats.append(
                     CrossAttnLayerStat(
                         layer=layer_idx,
-                        t2i=float(t2i_mean),
-                        i2t=float(i2t_mean),
+                        t2i=float(sim),
+                        i2t=float(sim),
                     )
                 )
 

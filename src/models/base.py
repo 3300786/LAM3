@@ -1,6 +1,6 @@
 # src/models/base.py
 from abc import ABC, abstractmethod
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple
 from src.utils.runtime import GenCfg
 
 
@@ -33,4 +33,14 @@ class MLLM(ABC):
         """
         raise NotImplementedError(
             f"{self.__class__.__name__} does not implement encode_modalities()."
+        )
+    def encode_modalities_with_trace(
+        self,
+        image: Any,
+        prompt: str,
+        gen_cfg: Optional[GenCfg] = None,
+        **kwargs,
+    ) -> Tuple[Dict[str, Any], Any]:
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement encode_modalities_with_trace()."
         )

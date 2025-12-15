@@ -1,45 +1,77 @@
+absl-py==2.3.1
 accelerate==1.11.0
 aiohappyeyeballs==2.6.1
 aiohttp==3.13.2
 aiosignal==1.4.0
-annotated-types==0.7.0
+anaconda-anon-usage @ file:///home/task_175762568762291/conda-bld/anaconda-anon-usage_1757625705334/work
+anaconda-auth @ file:///home/task_175994313587130/conda-bld/anaconda-cloud-auth-split_1759943195502/work
+anaconda-cli-base @ file:///home/task_176069795959605/conda-bld/anaconda-cli-base_1760698232645/work
+annotated-types @ file:///work/perseverance-python-buildout/croot/annotated-types_1728386958747/work
 anyio==4.11.0
-async-timeout==5.0.1
+archspec @ file:///home/task_175812491784513/conda-bld/archspec_1758124989039/work
 attrs==25.4.0
 backoff==2.2.1
 bitsandbytes==0.48.2
-certifi==2025.10.5
-charset-normalizer==3.4.4
-contourpy==1.3.2
+boltons @ file:///croot/boltons_1751383775419/work
+brotlicffi @ file:///croot/brotlicffi_1736182461069/work
+certifi @ file:///home/task_175978569032317/conda-bld/certifi_1759786061720/work/certifi
+cffi @ file:///home/task_176009805548162/conda-bld/cffi_1760098067589/work
+charset-normalizer @ file:///croot/charset-normalizer_1721748349566/work
+click @ file:///croot/click_1744271578095/work
+conda @ file:///home/task_176045791080537/conda-bld/conda_1760457922380/work/conda-src
+conda-anaconda-telemetry @ file:///croot/conda-anaconda-telemetry_1755883788794/work
+conda-anaconda-tos @ file:///croot/conda-anaconda-tos_1755123313635/work
+conda-content-trust @ file:///work/perseverance-python-buildout/croot/conda-content-trust_1728487058234/work
+conda-libmamba-solver @ file:///croot/conda-libmamba-solver_1745607008911/work/src
+conda-package-handling @ file:///croot/conda-package-handling_1731369017509/work
+conda_package_streaming @ file:///croot/conda-package-streaming_1751307506088/work
+contourpy==1.3.3
+cryptography @ file:///home/task_176010605113983/conda-bld/cryptography-split_1760106309120/work
 cycler==0.12.1
 datasets==4.4.1
-detoxify==0.5.2
+diffusers @ git+https://github.com/huggingface/diffusers@564079f2958b2b78cababbf366d97cd5505aef36
 dill==0.4.0
-distro==1.9.0
-exceptiongroup==1.3.0
+distro @ file:///work/perseverance-python-buildout/croot/distro_1728396110052/work
 filelock==3.19.1
 fonttools==4.60.1
+frozendict @ file:///work/perseverance-python-buildout/croot/frozendict_1728497542215/work
 frozenlist==1.8.0
 fsspec==2025.9.0
-ftfy==6.3.1
+git-filter-repo==2.47.0
+grpcio==1.76.0
 h11==0.16.0
 hf-xet==1.2.0
+hf_transfer==0.1.9
 httpcore==1.0.9
 httpx==0.28.1
 huggingface-hub==0.36.0
-idna==3.11
+idna @ file:///work/perseverance-python-buildout/croot/idna_1728385935861/work
+importlib_metadata==8.7.0
+jaraco.classes @ file:///croot/jaraco.classes_1755516327832/work
+jaraco.context @ file:///io/perseverance-python-buildout/croot/jaraco.context_1731706750665/work
+jaraco.functools @ file:///croot/jaraco.functools_1740408111753/work
+jeepney @ file:///tmp/build/80754af9/jeepney_1627537048313/work
 Jinja2==3.1.6
 jiter==0.12.0
 joblib==1.5.2
+jsonpatch @ file:///work/perseverance-python-buildout/croot/jsonpatch_1728399595941/work
+jsonpointer @ file:///croot/jsonpointer_1753788433671/work
+keyring @ file:///croot/keyring_1745484691218/work
 kiwisolver==1.4.9
-MarkupSafe==2.1.5
+libmambapy @ file:///home/task_175762302885340/conda-bld/mamba-split_1757623046707/work/libmambapy
+Markdown==3.10
+markdown-it-py @ file:///croot/markdown-it-py_1756299186942/work
+MarkupSafe==3.0.2
 matplotlib==3.10.7
-modelscope==1.32.0
+mdurl @ file:///home/task_175855216352428/conda-bld/mdurl_1758552176751/work
+menuinst @ file:///croot/menuinst_1753464582829/work
+modelscope==1.31.0
+more-itertools @ file:///home/task_176112148319406/conda-bld/more-itertools_1761121494880/work
 mpmath==1.3.0
 multidict==6.7.0
 multiprocess==0.70.18
-networkx==3.3
-numpy==2.1.2
+networkx==3.5
+numpy==2.2.6
 nvidia-cublas-cu12==12.4.5.8
 nvidia-cuda-cupti-cu12==12.4.127
 nvidia-cuda-nvrtc-cu12==12.4.127
@@ -53,43 +85,71 @@ nvidia-cusparselt-cu12==0.6.2
 nvidia-nccl-cu12==2.21.5
 nvidia-nvjitlink-cu12==12.4.127
 nvidia-nvtx-cu12==12.4.127
-open_clip_torch==3.2.0
-openai==2.7.2
-packaging==25.0
+openai==2.8.0
+opencv-python==4.12.0.88
+packaging @ file:///home/task_176104878999627/conda-bld/packaging_1761049078606/work
 pandas==2.3.3
+peft==0.17.1
 pillow==11.3.0
+pkce @ file:///work/perseverance-python-buildout/croot/pkce_1728388093137/work
+platformdirs @ file:///croot/platformdirs_1744273042065/work
+pluggy @ file:///croot/pluggy_1733169602837/work
 propcache==0.4.1
-protobuf==4.25.8
+protobuf==6.33.0
 psutil==7.1.3
 pyarrow==22.0.0
-pydantic==2.12.4
-pydantic_core==2.41.5
+pycosat @ file:///croot/pycosat_1736868416091/work
+pycparser @ file:///home/task_175749564936714/conda-bld/pycparser_1757496040682/work
+pydantic @ file:///home/task_176069749099755/conda-bld/pydantic_1760697502973/work
+pydantic-settings @ file:///home/task_175878416925449/conda-bld/pydantic-settings_1758784193926/work
+pydantic_core @ file:///home/task_176059738185733/conda-bld/pydantic-core_1760597433577/work
+Pygments @ file:///croot/pygments_1744664109463/work
+PyJWT @ file:///io/buildout/croot/pyjwt_1739558969999/work
 pyparsing==3.2.5
+PySocks @ file:///work/perseverance-python-buildout/croot/pysocks_1728386193338/work
 python-dateutil==2.9.0.post0
+python-dotenv @ file:///croot/python-dotenv_1745610241282/work
 pytz==2025.2
 PyYAML==6.0.3
+readchar @ file:///home/task_176061336965958/conda-bld/readchar_1760613437376/work
 regex==2025.11.3
-requests==2.32.5
+requests @ file:///croot/requests_1756709366904/work
+rich @ file:///home/task_176037557612320/conda-bld/rich_1760375632000/work
+ruamel.yaml @ file:///croot/ruamel.yaml_1745960305322/work
+ruamel.yaml.clib @ file:///croot/ruamel.yaml.clib_1745937152469/work
 safetensors==0.6.2
 scikit-learn==1.7.2
-scipy==1.15.3
+scipy==1.16.3
+seaborn==0.13.2
+SecretStorage @ file:///home/task_175793143758247/conda-bld/secretstorage_1757931467244/work
+semver @ file:///croot/semver_1736540782504/work
 sentencepiece==0.2.1
+setuptools==80.9.0
+shellingham @ file:///work/perseverance-python-buildout/croot/shellingham_1728395303315/work
 six==1.17.0
 sniffio==1.3.1
 sympy==1.13.1
+tensorboard==2.20.0
+tensorboard-data-server==0.7.2
 threadpoolctl==3.6.0
-timm==1.0.22
 tokenizers==0.22.1
+tomli @ file:///croot/tomli_1753774587605/work
 torch==2.6.0+cu124
+torchaudio==2.6.0+cu124
 torchvision==0.21.0+cu124
-tqdm==4.67.1
+tqdm @ file:///croot/tqdm_1738943501192/work
 transformers==4.57.1
 triton==3.2.0
-typing-inspection==0.4.2
-typing_extensions==4.15.0
+truststore @ file:///croot/truststore_1753907171582/work
+typer @ file:///home/task_175758067631213/conda-bld/typer_1757580709537/work
+typer-slim==0.20.0
+typing-inspection @ file:///home/task_176061348700415/conda-bld/typing-inspection_1760614166875/work
+typing_extensions @ file:///croot/typing_extensions_1756280817316/work
 tzdata==2025.2
-urllib3==2.5.0
-wcwidth==0.2.14
-xformers==0.0.29.post3
+urllib3 @ file:///croot/urllib3_1750775463400/work
+Werkzeug==3.1.3
+wheel==0.45.1
 xxhash==3.6.0
 yarl==1.22.0
+zipp==3.23.0
+zstandard @ file:///home/task_175818846949212/conda-bld/zstandard_1758189073015/work

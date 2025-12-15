@@ -1,4 +1,4 @@
-# scripts/run_synergy_jbv28k.py
+# scripts/run_synergy_hades.py
 import argparse
 import json
 from pathlib import Path
@@ -91,10 +91,28 @@ def ensure_null_image(dataset_root: Path) -> str:
 # ----------------------------------------------------
 def resolve_image_abs(case: Dict, dataset_root: Path) -> Optional[str]:
     """
-    将 case 中的 image_path 解析为绝对路径（若文件存在），否则返回 None。
-    只解析一次，避免在多 mode 下重复 Path / is_file。
+    将 case 中的图像路径解析为绝对路径（若文件存在），否则返回 None。
+
+    HADES meta 示例：
+    {
+      "id": "hades_Animal_000001_step5",
+      "dataset": "HADES",
+      "scenario": "Animal",
+      "keywords": "beat",
+      "category": "behavior",
+      "step": 5,
+      "mode": "img_and_txt",
+      "prompt": "...",
+      "image": "/data2/.../HADES/images/Animal_000001_step5.png"
+    }
+
+    这里兼容两种字段：
+    - 优先使用 "image_path"
+    - 若无，则使用 "image"
     """
     image_rel = case.get("image_path", None)
+    if not image_rel:
+        image_rel = case.get("image", None)
     if not image_rel:
         return None
 
@@ -104,13 +122,13 @@ def resolve_image_abs(case: Dict, dataset_root: Path) -> Optional[str]:
     # 情况1：绝对路径，直接用
     if p.is_absolute():
         ipath = p
-    # 情况2：已经是仓库内的完整相对路径，如 "data/JailBreakV_28K/xxx"
+    # 情况2：已经是仓库内的完整相对路径，如 "data/HADES/xxx"
     elif image_rel.startswith("data/"):
         ipath = Path(image_rel)
-    # 情况3：纯相对路径，如 "llm_transfer_attack/xxx.png"
+    # 情况3：纯相对路径，如 "images/xxx.png"
     else:
         ipath = dataset_root / image_rel
-    assert ipath.is_file()
+
     return str(ipath) if ipath.is_file() else None
 
 
@@ -122,9 +140,19 @@ def build_query(
 ) -> Tuple[str, str]:
     """
     返回 prompt 与 image_path 字符串（与 smoke_test 对齐）。
-    img_abs: 已经解析好的绝对路径（或 None）。
+
+    HADES 中：
+    - 文本字段为 "prompt"
+    JBV-28K 中：
+    - 文本字段为 "text_attack"
+
+    这里统一成 text_attack 优先，缺失时回退到 prompt。
     """
-    text_attack = case.get("text_attack", "") or ""
+    text_attack = case.get("text_attack", None)
+    if text_attack is None:
+        text_attack = case.get("prompt", "") or ""
+    else:
+        text_attack = text_attack or ""
 
     if mode == "txt_img":
         prompt = text_attack
@@ -179,7 +207,7 @@ def main():
         "--cfg",
         type=str,
         required=True,
-        help="configs/synergy_jbv28k.yaml",
+        help="configs/synergy_hades.yaml",
     )
     parser.add_argument(
         "--num_shards",
@@ -196,7 +224,8 @@ def main():
     args = parser.parse_args()
 
     cfg = load_cfg(args.cfg)
-    d_cfg = cfg["data"]["synergy_jbv28k"]
+    # 注意：这里和 jbv28k 的 key 不同
+    d_cfg = cfg["data"]["hades"]
     e_cfg = cfg["eval"]
     m_cfg = cfg["model"]
     l_cfg = cfg["log"]
@@ -309,6 +338,11 @@ def main():
                         "prompt": prompt_i,
                         "image": img_i,
                         "output": text_i,
+                        # 下面这些字段在 HADES meta 中是可选的，若不存在则为 None
+                        "dataset": "HADES",
+                        "scenario": next((c.get("scenario") for c in cases if str(c["id"]) == cid_i), None),
+                        "keywords": next((c.get("keywords") for c in cases if str(c["id"]) == cid_i), None),
+                        "category": next((c.get("category") for c in cases if str(c["id"]) == cid_i), None),
                     }
                     fout.write(json.dumps(log, ensure_ascii=False) + "\n")
 
@@ -339,6 +373,10 @@ def main():
                     "prompt": prompt_i,
                     "image": img_i,
                     "output": text_i,
+                    "dataset": "HADES",
+                    "scenario": next((c.get("scenario") for c in cases if str(c["id"]) == cid_i), None),
+                    "keywords": next((c.get("keywords") for c in cases if str(c["id"]) == cid_i), None),
+                    "category": next((c.get("category") for c in cases if str(c["id"]) == cid_i), None),
                 }
                 fout.write(json.dumps(log, ensure_ascii=False) + "\n")
 

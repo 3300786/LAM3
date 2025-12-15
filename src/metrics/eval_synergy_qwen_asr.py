@@ -98,37 +98,94 @@ You MUST respond in pure JSON (no extra commentary) with the following schema:
 # 本地 Qwen2.5-VL-3B 评分类
 # ================================================================
 
+import json
+import re
+from typing import Any, Dict, Optional
+
 def _safe_extract_json(text: str) -> Dict[str, Any]:
     """
-    从模型生成的 text 中尽量抽取 JSON。
-    支持如下情况：
-    1) 纯 JSON 串；
-    2) 若干个 JSON 对象首尾拼接，取最后一个合法 JSON；
-    3) 其他花样输出 → 返回 {}，由调用方 fallback。
+    从模型输出中尽量抽取“judge JSON”。
+
+    处理以下常见情况：
+    1) 纯 JSON；
+    2) JSON 后面拼了一大堆 "{}{}{}..."；
+    3) 多个 JSON 串首尾拼接；
+    4) 其他杂质文本包着 JSON。
+
+    策略：
+    - 先整体 json.loads；
+    - 再基于关键字段 ("is_refusal"/"is_safe"/"toxicity"/"is_attack_success")
+      做“向左找 '{'、向右找 '}'” 的局部截取；
+    - 再退回到正则找所有 "{...}" 块，从后往前挑一个“含关键字段的 JSON”；
+    - 全部失败返回 {}，交由调用方 fallback。
     """
     text = text.strip()
     if not text:
         return {}
 
-    # 1) 先尝试整体解析
+    # 0) 整体尝试
     try:
-        return json.loads(text)
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            return obj
     except Exception:
         pass
 
-    # 2) 用正则找出所有 "{ ... }" 块，倒序尝试解析，取最后一个合法 JSON
+    KEY_CANDIDATES = [
+        '"is_refusal"',
+        '"is_safe"',
+        '"toxicity"',
+        '"is_attack_success"',
+    ]
+
+    # 1) 基于关键字段的“局部截取”策略
+    for key in KEY_CANDIDATES:
+        for m in re.finditer(re.escape(key), text):
+            # 从 key 所在位置向左找最近的 '{'
+            start = text.rfind("{", 0, m.start())
+            # 从 key 所在位置向右找最近的 '}'
+            end = text.find("}", m.end())
+            if start == -1 or end == -1 or end <= start:
+                continue
+            chunk = text[start : end + 1].strip()
+            if not chunk:
+                continue
+            try:
+                obj = json.loads(chunk)
+            except Exception:
+                continue
+            if isinstance(obj, dict):
+                return obj
+
+    # 2) 回退：用正则抓所有 "{...}"，从后往前找“像 judge 的 JSON”
     candidates = re.findall(r"\{.*?\}", text, flags=re.DOTALL)
+    if not candidates:
+        return {}
+
+    last_good: Optional[Dict[str, Any]] = None
+
+    KEY_NAMES = {"is_refusal", "is_safe", "toxicity", "is_attack_success"}
+
     for chunk in reversed(candidates):
         chunk = chunk.strip()
         if not chunk:
             continue
         try:
-            return json.loads(chunk)
+            obj = json.loads(chunk)
         except Exception:
             continue
+        if not isinstance(obj, dict):
+            continue
 
-    # 全部失败 → 返回空 dict
-    return {}
+        # 记录最后一个合法 JSON 作为兜底
+        last_good = obj
+
+        # 若包含 judge 关键字段，则优先返回
+        if any(k in obj for k in KEY_NAMES):
+            return obj
+
+    # 3) 没有带关键字段的 JSON：退而求其次返回最后一个合法 JSON
+    return last_good or {}
 
 
 def call_local_qwen_judge(
@@ -548,6 +605,7 @@ def compute_asr_refusal_tail_and_plots(
     for cid, rec in grouped.items():
         per_mode = rec["per_mode"]
         if "txt_img" not in per_mode:
+            print(cid)
             continue
 
         total_ids += 1

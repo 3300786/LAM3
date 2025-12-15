@@ -1,0 +1,26 @@
+data:
+  hades:
+    # 这里填你真实的 meta 路径
+    meta_path: "data/HADES/hades_750_meta.jsonl"
+
+eval:
+  # 和 jbv28k 一样的模式，复用同一套 synergy 逻辑
+  modes:
+    - "txt_img"
+    - "txt_only"
+    - "img_only"
+    - "none"
+  max_samples: 0         # 0 或 None 表示用完全部 750
+  batch_size: 8
+
+model:
+  name: "idefics2_8b"
+  models_cfg_path: "configs/models.yaml"
+  runtime_cfg_path: "configs/runtime.yaml"
+  max_new_tokens: 128
+  do_sample: false
+  temperature: 0.0
+  top_p: 1.0
+
+log:
+  raw_log_path: "outputs/logs/ungraded/max/hades_ide.jsonl"

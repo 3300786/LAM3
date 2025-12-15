@@ -80,7 +80,7 @@ class Idefics2Wrapper(MLLM):
                 repo_id,
                 low_cpu_mem_usage=True,
                 quantization_config=_bnb4bit_cfg(runtime_cfg),
-                device_map=None,   # 让 HF 正常把模块放到 cuda:0
+                device_map="auto",   # 让 HF 正常把模块放到 cuda:0
             )
         else:
             self.model = Idefics2ForConditionalGeneration.from_pretrained(
@@ -90,7 +90,7 @@ class Idefics2Wrapper(MLLM):
             )
             if torch.cuda.is_available():
                 self.model = self.model.to(self._device)
-        self.model.set_attn_implementation("eager")
+        # self.model.set_attn_implementation("eager")
 
         # 用 Idefics2Processor（官方文档建议）
         self.processor = Idefics2Processor.from_pretrained(repo_id)
