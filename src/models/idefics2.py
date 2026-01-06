@@ -365,3 +365,4 @@ class Idefics2Wrapper(MLLM):
             need_trace=True,
         )
         return feats, layer_stats
+

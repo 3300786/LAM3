@@ -25,6 +25,3 @@ qwen25_vl_7b:
 qwen25_vl_3b:
   repo_id: /data2/wangjingsong/models/Qwen2.5-VL-3B-Instruct
   revision: main
-qwen3_vl_8b:
-  repo_id: Qwen/Qwen3-VL-8B-Instruct
-  revision: main

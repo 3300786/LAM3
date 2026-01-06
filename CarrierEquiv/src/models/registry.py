@@ -11,7 +11,6 @@ WRAPPER_CLS: Dict[str, type] = {
     "llama32_11b": Llama32VisionWrapper,
     "qwen25_vl_7b": Qwen25VLWrapper,
     "qwen25_vl_3b": Qwen25VLWrapper,
-    "qwen3_vl_8b": Qwen25VLWrapper,
 }
 
 

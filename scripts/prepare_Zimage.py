@@ -3,6 +3,8 @@ import os
 import torch
 from diffusers import ZImagePipeline
 
+# from Refusal.pipeline import OUTPUT_DIR
+
 # 1. Load the pipeline
 # Use bfloat16 for optimal performance on supported GPUs
 pipe = ZImagePipeline.from_pretrained(
@@ -50,13 +52,13 @@ while True:
         generator=torch.Generator("cuda").manual_seed(42),
     ).images[0]
 
-    x = 1
-    os.makedirs("outputs/Zimage", exist_ok=True)
-    while True:
-        path = f"outputs/Zimage/{x}.png"
-        if not os.path.exists(path):
-            image.save(path)
-            print(f"Saved to {path}")
-            break
-        x += 1
+    OUTPUT_DIR = "/home/wangjingsong/workspace/LAM3/Refusal/data/img/unsafe"
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    file_name = input("Enter file name: ")
+    path = OUTPUT_DIR + "/" + file_name
+    if not os.path.exists(path):
+        image.save(path)
+        print(f"Saved to {path}")
+    else:
+        print(f"File {path} already exists")
 

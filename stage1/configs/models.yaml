@@ -1,0 +1,15 @@
+llava15_7b:
+  repo_id:
+  revision: main
+idefics2_8b:
+  repo_id:
+  revision: main
+llama32_11b:
+  repo_id:
+  revision: main
+qwen25_vl_7b:
+  repo_id:
+  revision: main
+qwen25_vl_3b:
+  repo_id:
+  revision: main

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from PIL import Image
 import torch
@@ -21,10 +21,30 @@ class CrossAttnLayerStat:
     t2i: float  # here: hidden-state similarity proxy (cos(text, image))
     i2t: float  # same proxy, kept for compatibility
 
+def _map_precision(p: str) -> torch.dtype:
+    p = (p or "bf16").lower().strip()
+    if p in ("bf16", "bfloat16"):
+        return torch.bfloat16
+    if p in ("fp16", "float16", "half"):
+        return torch.float16
+    if p in ("fp32", "float32"):
+        return torch.float32
+    # 默认保守
+    return torch.bfloat16
+
+
+def _maybe_to_device(batch: Dict[str, Any], device: torch.device) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for k, v in batch.items():
+        if torch.is_tensor(v):
+            out[k] = v.to(device, non_blocking=True)
+        else:
+            out[k] = v
+    return out
 
 class Llava15Wrapper(MLLM):
     def __init__(self, repo_dir: str, runtime_cfg: Optional[Dict[str, Any]] = None):
-        runtime_cfg = runtime_cfg or {}
+        self.runtime_cfg = runtime_cfg or {}
         device_str = runtime_cfg.get("device", "cuda:0")
         self.device = torch.device(device_str if torch.cuda.is_available() else "cpu")
 
@@ -179,76 +199,126 @@ class Llava15Wrapper(MLLM):
             "beyond what is visible."
         )
 
-    def _postprocess_generated_text(self, text: str) -> str:
-        text = text.strip()
+    def _default_system_prompt(self) -> str:
+        # 若你运行脚本总会显式传 system_prompt，这个基本不会用到
+        return "Follow the user's instruction. If the request is unsafe, refuse."
 
-        if text.startswith("Assistant:"):
-            text = text[len("Assistant:") :].lstrip()
-
-        # 截断到首个 User/eot 之前
-        text = re.split(r"(?:\nUser:|<\|eot_id\|>|</s>|<\|end_of_text\|>)", text)[0].strip()
-
-        # 简单压缩段落数，避免过长
-        parts = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
-        if len(parts) > 2:
-            text = "\n\n".join(parts[:2])
-
-        return text
-
-    # =====================================================================
-    # 生成接口
-    # =====================================================================
+    def _postprocess_generated_text(self, t: str) -> str:
+        return (t or "").strip()
 
     @torch.inference_mode()
-    def generate(self, image_path: str, prompt: str, gen: GenCfg) -> str:
-        image = Image.open(image_path).convert("RGB")
+    def generate(
+            self,
+            image: Any,
+            prompt: str,
+            gen_cfg: GenCfg,
+            *,
+            system_prompt: Optional[str] = None,
+            mixed_order: Optional[str] = None,  # "image_first" | "text_first"
+            debug_return_prompt: bool = False,  # audit helper
+    ) -> Union[str, Tuple[str, str]]:
+        if image is not None and not isinstance(image, Image.Image):
+            raise TypeError(f"Llava15Wrapper expects PIL.Image.Image or None, got: {type(image)}")
 
-        # 加系统约束，抑制臆测
-        messages = [
-            {
-                "role": "system",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": self._build_system_text(),
-                    },
-                ],
-            },
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image"},
-                    {"type": "text", "text": prompt},
-                ],
-            },
-        ]
+        # ---- decoding cfg ----
+        max_new_tokens = int(getattr(gen_cfg, "max_new_tokens", 256))
+        min_new_tokens = int(getattr(gen_cfg, "min_new_tokens", 0))
+        do_sample = bool(getattr(gen_cfg, "do_sample", False))
+        temperature = float(getattr(gen_cfg, "temperature", 1.0))
+        top_p = float(getattr(gen_cfg, "top_p", 1.0))
+        seed = getattr(gen_cfg, "seed", None)
 
-        chat_str = self.processor.apply_chat_template(
-            messages, add_generation_prompt=True, tokenize=False
+        # ---- system prompt (control variable) ----
+        if system_prompt is None:
+            system_prompt = self.runtime_cfg.get("global_system_prompt", None)
+        if system_prompt is None:
+            system_prompt = self._default_system_prompt()
+
+        # ---- mixed order resolution ----
+        # priority: explicit arg > gen_cfg.mixed_order > runtime_cfg["mixed_order"] > "text_first"
+        if mixed_order is None:
+            mixed_order = getattr(gen_cfg, "mixed_order", None)
+        if mixed_order is None:
+            mixed_order = self.runtime_cfg.get("mixed_order", None)
+        if mixed_order is None:
+            mixed_order = "text_first"
+
+        mixed_order = str(mixed_order).lower().strip()
+        if mixed_order not in ("image_first", "text_first"):
+            raise ValueError(f"mixed_order must be 'image_first' or 'text_first', got: {mixed_order}")
+
+        prompt = "" if prompt is None else str(prompt)
+        prompt_is_empty = (prompt.strip() == "")
+
+        # ---- build messages (IMPORTANT: order-sensitive) ----
+        messages: List[Dict[str, Any]] = []
+        if system_prompt:
+            messages.append(
+                {"role": "system", "content": [{"type": "text", "text": str(system_prompt)}]}
+            )
+
+        if image is None:
+            # text-only
+            messages.append({"role": "user", "content": [{"type": "text", "text": prompt}]})
+            images = None
+        else:
+            # LLaVA 的 chat_template 常用 {"type":"image"} 作为占位，真实图像走 processor(images=...)
+            if prompt_is_empty:
+                # image-only
+                messages.append({"role": "user", "content": [{"type": "image"}]})
+            else:
+                if mixed_order == "image_first":
+                    content = [{"type": "image"}, {"type": "text", "text": prompt}]
+                else:
+                    content = [{"type": "text", "text": prompt}, {"type": "image"}]
+                messages.append({"role": "user", "content": content})
+            images = [image]
+
+        # ---- apply chat template ----
+        chat_text = self.processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
         )
 
-        enc = self.processor(text=[chat_str], images=[image], return_tensors="pt")
-        for k in enc:
-            enc[k] = enc[k].to(self.device, non_blocking=True)
+        # ---- tokenize / encode ----
+        enc = self.processor(
+            text=[chat_text],
+            images=images,
+            return_tensors="pt",
+            padding=True,
+        )
 
-        # 生成配置：评测期用较为稳定的解码（runtime.yaml 中也会给出默认）
+        device = self.model.device
+        enc = _maybe_to_device(enc, device)
+
+        # ---- deterministic generator (avoid polluting global RNG) ----
+        generator = None
+        if seed is not None:
+            generator = torch.Generator(device=device)
+            generator.manual_seed(int(seed))
+
         gen_kwargs: Dict[str, Any] = dict(
-            max_new_tokens=int(gen.max_new_tokens),
-            do_sample=True,
-            temperature=1.0,
-            top_p=0.9,
-            repetition_penalty=1.0,
+            max_new_tokens=max_new_tokens,
+            min_new_tokens=min_new_tokens,  # 你已设为 0
+            do_sample=do_sample,  # 你已设为 False
+            temperature=temperature if do_sample else None,
+            top_p=top_p if do_sample else None,
+            generator=generator,
         )
         if self.eos_token_ids is not None:
             gen_kwargs["eos_token_id"] = self.eos_token_ids
 
-        # prompt 长度：单样本，这里直接用 seq 长度即可
+        # ---- generate ----
         prompt_len = enc["input_ids"].shape[-1]
         out = self.model.generate(**enc, **gen_kwargs)
-        gen_ids = out[:, prompt_len:]
-        text = self.processor.batch_decode(gen_ids, skip_special_tokens=True)[0]
+        gen_ids = out[0][prompt_len:]
+        out_text = self.processor.decode(gen_ids, skip_special_tokens=True)
+        out_text = self._postprocess_generated_text(out_text)
 
-        return self._postprocess_generated_text(text)
+        if debug_return_prompt:
+            return out_text, chat_text
+        return out_text
 
     @torch.inference_mode()
     def generate_batch(

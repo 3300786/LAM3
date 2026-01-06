@@ -1,31 +1,29 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-多模态交互式终端对话脚本（Qwen2.5-VL-7B-Instruct）
+Multimodal interactive CLI (Qwen2.5-VL-7B-Instruct) with paired inference:
+- Run TEXT-ONLY and TEXT+IMAGE for each user turn
+- User labels each output as: safe / unsafe / invalid
+- After each turn, print label ratios (overall + per mode)
 
-用法示例：
-  python -m scripts.interactive_qwen2_5_vl_cli \
-    --model_path /models/Qwen2.5-VL-7B-Instruct
+Usage:
+  python -m scripts.paired_qwen25_vl_cli \
+    --model_path /models/Qwen2.5-VL-7B-Instruct \
+    --default_image /path/to/default.png \
+    --log_jsonl outputs/paired_eval.jsonl
 
-输入格式：
-  1) 纯文本：
-       User: 你好，简单自我介绍一下。
-  2) 图像 + 文本：
-       User: img=/path/to/image.png 这张图里发生了什么？
-     若只给图不写问题：
-       User: img=/path/to/image.png
-     会自动使用默认问题："Describe this image."
-
-特殊命令：
-  /exit 或 /quit 结束对话
-  /clear 清空对话历史
+Commands:
+  /exit, /quit  exit
+  /clear        reset counters & optional session history (this script is stateless for model context)
 """
 
 import argparse
+import json
 import os
-import re
+import sys
+import time
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
@@ -33,34 +31,38 @@ from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 from qwen_vl_utils import process_vision_info
 
 
-# ===================== 参数解析 =====================
+LABELS = ("safe", "unsafe", "invalid")
+MODES = ("text_only", "text_img")
+
+
+# ===================== Args =====================
 
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(description="Interactive CLI chat with Qwen2.5-VL (multimodal)")
+    ap = argparse.ArgumentParser(description="Paired inference CLI for Qwen2.5-VL (text-only vs text+image)")
     ap.add_argument(
         "--model_path",
         type=str,
-        default="models/Qwen2.5-VL-7B-Instruct",
-        help="Local path to Qwen2.5-VL-7B-Instruct, e.g. /models/Qwen2.5-VL-7B-Instruct",
+        default="/data2/wangjingsong/models/Qwen2.5-VL-7B-Instruct",
+        help="Local path to Qwen2.5-VL-7B-Instruct",
     )
     ap.add_argument(
         "--device",
         type=str,
         default="auto",
         choices=["auto", "cuda", "cpu"],
-        help="Device to use: auto / cuda / cpu",
+        help="Device: auto / cuda / cpu",
     )
     ap.add_argument(
         "--max_new_tokens",
         type=int,
         default=512,
-        help="Maximum new tokens to generate",
+        help="Maximum new tokens",
     )
     ap.add_argument(
         "--temperature",
         type=float,
         default=0.2,
-        help="Sampling temperature; 0 表示基本确定性（会自动关闭采样）",
+        help="Sampling temperature; 0 => deterministic (no sampling)",
     )
     ap.add_argument(
         "--top_p",
@@ -72,139 +74,114 @@ def build_parser() -> argparse.ArgumentParser:
         "--system_prompt",
         type=str,
         default="You are a helpful AI assistant.",
-        help="System prompt passed into chat template.",
+        help="System prompt used in chat template",
+    )
+    ap.add_argument(
+        "--default_image",
+        type=str,
+        default="/home/wangjingsong/workspace/LAM3/data/synergy_jbv28k/null_image.png",
+        help="Default image path used when user input is empty. If empty, TEXT+IMAGE will be skipped unless user provides a path.",
+    )
+    ap.add_argument(
+        "--log_jsonl",
+        type=str,
+        default="",
+        help="Optional path to write per-turn records as JSONL",
+    )
+    ap.add_argument(
+        "--print_inputs",
+        action="store_true",
+        help="Print resolved image uri and prompt each turn",
     )
     return ap
 
 
-# ===================== 模型加载 =====================
+# ===================== Model loading =====================
 
-def load_qwen2_5_vl(
-    model_path: str,
-    device_str: str = "auto",
-):
+def load_qwen2_5_vl(model_path: str, device_str: str = "auto"):
     model_path = str(Path(model_path).expanduser())
     if not os.path.isdir(model_path):
         raise FileNotFoundError(f"model_path '{model_path}' is not a directory.")
 
-    # 设备选择
     if device_str == "cpu":
         device = "cpu"
         device_map = {"": "cpu"}
     else:
         if torch.cuda.is_available():
             device = "cuda"
-            # 多 GPU 时直接交给 transformers 的 device_map="auto"
             device_map = "auto" if device_str in ("auto", "cuda") else {"": "cuda"}
         else:
             device = "cpu"
             device_map = {"": "cpu"}
-            print("[warn] CUDA is not available, falling back to CPU (very slow).")
+            print("[warn] CUDA not available; using CPU (slow).")
 
     print(f"[load] loading Qwen2.5-VL from {model_path} on {device} ...")
-
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         model_path,
         torch_dtype="auto",
         device_map=device_map,
         trust_remote_code=True,
     )
-
-    processor = AutoProcessor.from_pretrained(
-        model_path,
-        trust_remote_code=True,
-    )
-
+    processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
     print("[load] model & processor ready.")
     return model, processor, device
 
 
-# ===================== 输入解析 =====================
+# ===================== Helpers =====================
 
-def parse_user_input_for_images(user_inp: str) -> (Optional[List[str]], str):
-    """
-    解析用户输入中的 img=/path/to/img.png 前缀。
-    返回 (image_uris or None, text_query)
-
-    支持：
-      img=/path/to/img.png 问题……
-      image=/path/to/img.png 问题……
-    多张图用逗号分隔：
-      img=1.png,2.png 问题……
-    """
-    user_inp = user_inp.strip()
-    if not user_inp:
-        return None, ""
-
-    m = re.match(r"^(img|image)\s*=\s*(\S+)\s*(.*)$", user_inp, flags=re.IGNORECASE)
-    if not m:
-        return None, user_inp
-
-    img_path_str = m.group(2).strip()
-    rest_text = m.group(3).strip()
-
-    paths = [p.strip() for p in img_path_str.split(",") if p.strip()]
-    uris: List[str] = []
-
-    for p in paths:
-        path = Path(p).expanduser()
-        if not path.is_file():
-            print(f"[warn] image path not found: {path}")
-            continue
-        # Qwen2.5-VL 本身支持 file:// 形式的本地路径
-        uris.append("file://" + str(path.resolve()))
-
-    if not uris:
-        print("[warn] no valid images loaded, fallback to text-only.")
-        return None, rest_text or user_inp
-
-    if not rest_text:
-        rest_text = "Describe this image."
-
-    return uris, rest_text
+def _path_to_file_uri(p: str) -> Optional[str]:
+    if not p:
+        return None
+    path = Path(p).expanduser().resolve()
+    if not path.is_file():
+        return None
+    return "file://" + str(path)
 
 
-# ===================== 单轮生成 =====================
+def _build_conversation(system_prompt: str, text_query: str, image_uri: Optional[str]) -> List[Dict[str, Any]]:
+    msgs: List[Dict[str, Any]] = []
+    if system_prompt:
+        msgs.append({"role": "system", "content": system_prompt})
 
-def generate_from_conversation(
+    if image_uri:
+        content = [{"type": "image", "image": image_uri}, {"type": "text", "text": text_query}]
+    else:
+        content = [{"type": "text", "text": text_query}]
+    msgs.append({"role": "user", "content": content})
+    return msgs
+
+
+@torch.inference_mode()
+def generate_once(
     model,
     processor,
     device: str,
     conversation: List[Dict[str, Any]],
-    max_new_tokens: int = 512,
-    temperature: float = 0.2,
-    top_p: float = 0.95,
+    max_new_tokens: int,
+    temperature: float,
+    top_p: float,
 ) -> str:
-    """
-    conversation: HF chat template 的 message 列表：
-      [{"role": "...", "content": ...}, ...]
-    """
-    # 1) chat template
     text = processor.apply_chat_template(
         conversation,
         tokenize=False,
         add_generation_prompt=True,
     )
 
-    # 2) 视觉信息（images/videos）解析
-    #    注意：process_vision_info 接收的是 batch of conversations
+    # process_vision_info expects a batch of conversations
     messages_batch = [conversation]
     image_inputs, video_inputs = process_vision_info(messages_batch)
 
-    # 3) 编码为张量
     inputs = processor(
         text=[text],
-        images=image_inputs,
-        videos=video_inputs,
+        images=image_inputs,   # can be None
+        videos=video_inputs,   # can be None
         padding=True,
         return_tensors="pt",
     )
-
     inputs = inputs.to(device)
 
-    # 4) 生成
     do_sample = temperature > 0.0
-    gen_kwargs = {
+    gen_kwargs: Dict[str, Any] = {
         "max_new_tokens": max_new_tokens,
         "do_sample": do_sample,
         "top_p": top_p,
@@ -212,117 +189,238 @@ def generate_from_conversation(
     if do_sample:
         gen_kwargs["temperature"] = temperature
 
-    with torch.no_grad():
-        generated_ids = model.generate(**inputs, **gen_kwargs)
-
-    # 只保留新生成部分（去掉 prompt）
+    generated_ids = model.generate(**inputs, **gen_kwargs)
     generated_ids_trimmed = [
         out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
     ]
-    output_texts = processor.batch_decode(
+    out = processor.batch_decode(
         generated_ids_trimmed,
         skip_special_tokens=True,
         clean_up_tokenization_spaces=False,
-    )
-    return output_texts[0].strip()
+    )[0].strip()
+    return out
 
 
-# ===================== 主逻辑：交互循环 =====================
+def _read_line(prompt: str) -> str:
+    try:
+        return input(prompt)
+    except EOFError:
+        return "/exit"
+
+
+def _read_multiline(prompt: str) -> str:
+    print(prompt)
+    print("  (finish with a single line: END)")
+    lines: List[str] = []
+    while True:
+        try:
+            line = input()
+        except EOFError:
+            break
+        if line.strip() == "END" or line.strip() == "###":
+            break
+        lines.append(line)
+    print("Input Over. Inferring ...")
+    return "\n".join(lines).strip()
+
+
+def _normalize_label(s: str) -> Optional[str]:
+    s = (s or "").strip().lower()
+    if s in ("s", "safe"):
+        return "safe"
+    if s in ("u", "unsafe"):
+        return "unsafe"
+    if s in ("i", "invalid"):
+        return "invalid"
+    return None
+
+
+def _ratios(counts: Dict[str, int]) -> Dict[str, float]:
+    total = sum(counts.values())
+    if total <= 0:
+        return {k: 0.0 for k in LABELS}
+    return {k: counts.get(k, 0) / total for k in LABELS}
+
+
+def _print_stats(overall: Dict[str, int], per_mode: Dict[str, Dict[str, int]]) -> None:
+    o = _ratios(overall)
+    print("[stats] overall:")
+    print(f"  total={sum(overall.values())}  safe={o['safe']:.3f}  unsafe={o['unsafe']:.3f}  invalid={o['invalid']:.3f}")
+
+    for mode in MODES:
+        r = _ratios(per_mode[mode])
+        print(f"[stats] {mode}:")
+        print(f"  total={sum(per_mode[mode].values())}  safe={r['safe']:.3f}  unsafe={r['unsafe']:.3f}  invalid={r['invalid']:.3f}")
+
+
+def _append_jsonl(path: str, obj: Dict[str, Any]) -> None:
+    if not path:
+        return
+    p = Path(path).expanduser()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+
+
+# ===================== Main loop =====================
 
 def main():
-    parser = build_parser()
-    args = parser.parse_args()
+    args = build_parser().parse_args()
 
-    model, processor, device = load_qwen2_5_vl(
-        model_path=args.model_path,
-        device_str=args.device,
-    )
+    model, processor, device = load_qwen2_5_vl(args.model_path, args.device)
 
-    # 对话历史（符合 Qwen chat template）
-    # 结构：List[{"role": "...", "content": ...}]
-    history_msgs: List[Dict[str, Any]] = []
-    if args.system_prompt:
-        history_msgs.append({"role": "system", "content": args.system_prompt})
+    default_image_uri = _path_to_file_uri(args.default_image) if args.default_image else None
+    if args.default_image and not default_image_uri:
+        print(f"[warn] --default_image not found: {args.default_image} (TEXT+IMAGE may be skipped unless user provides a valid path)")
 
-    print("\n[interactive] Qwen2.5-VL multimodal chat started.")
-    print("说明：")
-    print("  - 纯文本：直接输入问题并回车。")
-    print("  - 图像 + 文本：")
-    print("      img=/path/to/image.png 这张图里发生了什么？")
-    print("    多图：")
-    print("      img=1.png,2.png 帮我比较两张图的区别。")
-    print("  - 指令：")
-    print("      /exit 或 /quit   结束对话")
-    print("      /clear           清空对话历史\n")
+    overall_counts = {k: 0 for k in LABELS}
+    mode_counts = {m: {k: 0 for k in LABELS} for m in MODES}
+    turn_id = 0
 
-    try:
-        while True:
+    print("\n[interactive] Paired inference started.")
+    print("Flow per turn:")
+    print("  1) input image path (empty => default path)")
+    print("  2) input text prompt (multiline; end with END)")
+    print("  3) run TEXT-ONLY and TEXT+IMAGE inference")
+    print("  4) label each output: safe/unsafe/invalid (or s/u/i)")
+    print("Commands: /exit /quit, /clear\n")
+
+    while True:
+        img_inp = _read_line("Image path (empty => default): ").strip()
+        # img_inp = ""
+        low = img_inp.lower()
+
+        if low in ("/exit", "exit", "/quit", "quit"):
+            print("[interactive] Bye.")
+            break
+
+        if low in ("/clear", "clear"):
+            overall_counts = {k: 0 for k in LABELS}
+            mode_counts = {m: {k: 0 for k in LABELS} for m in MODES}
+            turn_id = 0
+            print("[interactive] counters cleared.\n")
+            continue
+
+        # resolve image uri
+        image_uri = None
+        if img_inp and img_inp != "":
+            image_uri = _path_to_file_uri(img_inp)
+            if not image_uri:
+                print(f"[warn] image path not found: {Path(img_inp).expanduser().resolve()}")
+        else:
+            image_uri = default_image_uri
+
+        prompt = _read_multiline("Prompt:")
+        if not prompt:
+            print("[warn] empty prompt, skip.\n")
+            continue
+
+        if args.print_inputs:
+            print(f"[debug] image_uri={image_uri}")
+            print(f"[debug] prompt=\n{prompt}\n")
+
+        turn_id += 1
+        ts = int(time.time())
+
+        # ---- Inference: text-only
+        text_only_conv = _build_conversation(args.system_prompt, prompt, image_uri=None)
+        try:
+            out_text_only = generate_once(
+                model=model,
+                processor=processor,
+                device=device,
+                conversation=text_only_conv,
+                max_new_tokens=args.max_new_tokens,
+                temperature=args.temperature,
+                top_p=args.top_p,
+            )
+        except Exception as e:
+            out_text_only = f"[error] generation failed: {e}"
+
+        # ---- Inference: text+image (if image exists)
+        out_text_img = ""
+        ran_text_img = False
+        if image_uri:
+            text_img_conv = _build_conversation(args.system_prompt, prompt, image_uri=image_uri)
             try:
-                user_inp = input("User: ").strip()
-            except EOFError:
-                print("\n[interactive] EOF received, exiting.")
-                break
-
-            if not user_inp:
-                continue
-
-            low = user_inp.lower()
-            if low in {"exit", "/exit", "quit", "/quit"}:
-                print("[interactive] Bye.")
-                break
-            if low in {"/clear", "clear"}:
-                history_msgs = []
-                if args.system_prompt:
-                    history_msgs.append({"role": "system", "content": args.system_prompt})
-                print("[interactive] history cleared.\n")
-                continue
-
-            # 解析图像前缀
-            image_uris, text_query = parse_user_input_for_images(user_inp)
-            if not text_query:
-                text_query = "Describe this image." if image_uris else user_inp
-
-            # 构造当前用户消息
-            content: Any
-            if image_uris:
-                chunks = [{"type": "image", "image": uri} for uri in image_uris]
-                chunks.append({"type": "text", "text": text_query})
-                content = chunks
-            else:
-                # 纯文本也使用 chunk 形式，便于统一处理
-                content = [{"type": "text", "text": text_query}]
-
-            user_msg = {
-                "role": "user",
-                "content": content,
-            }
-
-            # 当前轮完整对话（历史 + 新的 user）
-            conversation = history_msgs + [user_msg]
-
-            try:
-                answer = generate_from_conversation(
+                out_text_img = generate_once(
                     model=model,
                     processor=processor,
                     device=device,
-                    conversation=conversation,
+                    conversation=text_img_conv,
                     max_new_tokens=args.max_new_tokens,
                     temperature=args.temperature,
                     top_p=args.top_p,
                 )
+                ran_text_img = True
             except Exception as e:
-                print(f"[error] generation failed: {e}\n")
-                continue
+                out_text_img = f"[error] generation failed: {e}"
+                ran_text_img = True
+        else:
+            out_text_img = "[skip] no image provided and no default image set."
 
-            # 打印回复
-            print(f"Assistant: {answer}\n")
+        # ---- Display outputs
+        print("\n" + "=" * 80)
+        print(f"[turn {turn_id}] TEXT-ONLY output:")
+        print(out_text_only if out_text_only else "(empty)")
+        print("-" * 80)
+        print(f"[turn {turn_id}] TEXT+IMAGE output:")
+        print(out_text_img if out_text_img else "(empty)")
+        print("=" * 80 + "\n")
 
-            # 更新历史
-            history_msgs.append(user_msg)
-            history_msgs.append({"role": "assistant", "content": answer})
+        # ---- Labeling (per mode)
+        # text-only label
+        while True:
+            lab = _normalize_label(_read_line("Label TEXT-ONLY (safe/unsafe/invalid | s/u/i): "))
+            if lab:
+                break
+            print("[warn] invalid label. Use: safe/unsafe/invalid or s/u/i.")
+        mode_counts["text_only"][lab] += 1
+        overall_counts[lab] += 1
+        label_text_only = lab
 
-    except KeyboardInterrupt:
-        print("\n[interactive] KeyboardInterrupt, exiting.")
+        # text+img label (only if we ran it; skip only occurs when no image)
+        label_text_img = None
+        if ran_text_img:
+            while True:
+                lab2 = _normalize_label(_read_line("Label TEXT+IMAGE (safe/unsafe/invalid | s/u/i): "))
+                if lab2:
+                    break
+                print("[warn] invalid label. Use: safe/unsafe/invalid or s/u/i.")
+            mode_counts["text_img"][lab2] += 1
+            overall_counts[lab2] += 1
+            label_text_img = lab2
+        else:
+            # did not run text_img; do not count
+            pass
+
+        # ---- Print ratios
+        print()
+        _print_stats(overall_counts, mode_counts)
+        print()
+
+        # ---- Optional logging
+        rec = {
+            "ts": ts,
+            "turn_id": turn_id,
+            "image_path_input": img_inp,
+            "image_uri": image_uri,
+            "prompt": prompt,
+            "outputs": {
+                "text_only": out_text_only,
+                "text_img": out_text_img,
+            },
+            "labels": {
+                "text_only": label_text_only,
+                "text_img": label_text_img,
+            },
+            "counts": {
+                "overall": dict(overall_counts),
+                "text_only": dict(mode_counts["text_only"]),
+                "text_img": dict(mode_counts["text_img"]),
+            },
+        }
+        _append_jsonl(args.log_jsonl, rec)
 
 
 if __name__ == "__main__":

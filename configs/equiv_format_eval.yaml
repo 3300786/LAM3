@@ -18,7 +18,7 @@ eval:
     Each item should contain approximately 100 words.
 
 model:
-  name: "llama32_11b"                 # 这里填你们 models.yaml 里的 key
+  name: "llava15_7b"                 # 这里填你们 models.yaml 里的 key
   models_cfg_path: "configs/models.yaml"
   runtime_cfg_path: "configs/runtime.yaml"
   max_new_tokens: 512
