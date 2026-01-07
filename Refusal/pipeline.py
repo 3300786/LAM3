@@ -8,7 +8,7 @@ from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor, Qwen
 # 导入模块
 from data.data_loader import DataLoader
 from src.vector import extract_refusal_vector
-from src.eval import run_evaluation, analyze_and_plot, plot_behavioral_curves, analyze_separability
+from src.eval import run_evaluation, analyze_and_plot, plot_behavioral_curves
 from src.judge import run_judge
 from datetime import datetime
 # Config
@@ -92,7 +92,8 @@ def main():
     # [新增] 外部输入文件参数
     parser.add_argument("--input_file", type=str, default=None,
                         help="Path to an external JSONL file containing evaluation samples. If provided, this overrides the default eval dataset.")
-
+    parser.add_argument("--timestamp",
+                        help="")
     parser.add_argument("--skip_judge", action="store_true",
                         help="If set, skip phase 2 (judging).")
     parser.add_argument("--skip_inference", action="store_true",
@@ -102,7 +103,9 @@ def main():
 
     # 路径配置
     MODEL_PATH = os.path.join(VICTIM_MODEL_DIR, args.victim_model)
-    global OUTPUT_DIR
+    global OUTPUT_DIR, timestamp
+    if args.timestamp:
+        timestamp = args.timestamp
     OUTPUT_DIR = os.path.join(OUTPUT_DIR, args.victim_model, args.mode, timestamp)
     RAW_RESULT_FILE = os.path.join(OUTPUT_DIR, "eval_raw.jsonl")
     FINAL_RESULT_FILE = os.path.join(OUTPUT_DIR, "final_judged.jsonl")
@@ -156,7 +159,7 @@ def main():
 
         # 4. Run Evaluation (Inference)
         print(">>> Step 4: Running Evaluation")
-        raw_results = run_evaluation(model, processor, eval_dataset, refusal_vectors, device)
+        raw_results = run_evaluation(model, processor, eval_dataset, refusal_vectors, device, max_new_tokens=512, output_path=RAW_RESULT_FILE)
 
         # 4.1 Analyze & Plot
         print(">>> Step 4.1: Plotting & Analysis (Pre-Judge)")
@@ -204,11 +207,8 @@ def main():
         print("       POST-JUDGE VISUALIZATION")
         print("=" * 50)
 
-        # 1. 细粒度行为曲线 (Absolute / Relative) & Grid View
         plot_behavioral_curves(FINAL_RESULT_FILE, OUTPUT_DIR)
 
-        # 2. 可分性分析 (R0 vs J0 vs ...)
-        analyze_separability(FINAL_RESULT_FILE, OUTPUT_DIR, target_layer=20)
 
         print(f"All visualizations saved to {OUTPUT_DIR}")
 
