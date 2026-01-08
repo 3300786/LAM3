@@ -227,6 +227,7 @@ class InteractiveSession:
             "behavior": behavior,
             "status": status
         })
+        print(self.history[-1])
         self.plot_current_status()
 
     def plot_current_status(self):
@@ -291,8 +292,8 @@ def main():
     parser.add_argument("--judge_model", type=str, default="/data2/wangjingsong/modelscope_cache/models/LLM-Research/Llama-3___2-11B-Vision-Instruct")
 
     # 新增设备参数
-    parser.add_argument("--victim_device", type=str, default="cuda:0", help="Device for victim model (e.g., cuda:0)")
-    parser.add_argument("--judge_device", type=str, default="cuda:1", help="Device for judge model (e.g., cuda:1)")
+    parser.add_argument("--victim_device", type=str, default="cuda:1", help="Device for victim model (e.g., cuda:0)")
+    parser.add_argument("--judge_device", type=str, default="cuda:2", help="Device for judge model (e.g., cuda:1)")
 
     args = parser.parse_args()
 
